@@ -11,9 +11,9 @@ const MAX_BIT_PER_CHAN: u8 = 4;
 #[derive(Error, Debug)]
 #[must_use]
 pub enum Error {
-    #[error("Empty initial paths, use `--in` cli arg: `--in png_path_0 ... png_path_n`")]
+    #[error("Empty initial paths, use `--init` cli arg: `--init png_path_0 ... png_path_n`")]
     EmptyInit,
-    #[error("Inconsistent lenght of modified paths, `--out` arg should have same amount of paths as `--in`")]
+    #[error("Inconsistent lenght of modified paths, `--modt` arg should have same amount of paths as `--init`")]
     InconsistModLen,
     #[error("The dalta {0} is too big, should be no more than {MAX_BIT_PER_CHAN}")]
     TooBigDelta(u8),
@@ -29,12 +29,15 @@ pub enum Error {
     InvalidMsg(Box<FromUtf8Error>),
     #[error("I/O error: {0}")]
     ErrorIO(std::io::Error),
+    #[error("Save probelm.\nMost likely the prefix `file:`.\nFile path: \"{1}\".\nThe problem: {0}")]
+    SaveProblem(std::io::Error, String),
     #[error("Unexpected byte({0}) of simple hide's type")]
     InvalidSimpleHideTypeByte(u8),
     #[error("Header was not readed (img too small)")]
     UnreadedHeader,
+    #[error("Not enough size of initial images in total (need to hide {0} bytes more). To fix it add more images into `--init` arg.")]
+    NotEnoughSizeOfInit(usize),
 }
-// Implement From<ErrorA> for ErrorB
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
         Self::ErrorIO(err)
@@ -73,11 +76,11 @@ enum CliCmd {
 
 #[derive(Parser, Debug)]
 pub struct Info {
-    #[arg(long = "init")]
+    #[arg(long = "init", value_delimiter = ',')]
     /// Paths of initial .png
     initial_img: Vec<String>,
     
-    #[arg(long = "mod")]
+    #[arg(long = "mod", value_delimiter = ',')]
     /// Paths of modified .png
     modified_img: Option<Vec<String>>,
 
@@ -271,6 +274,11 @@ impl<Iter: Iterator<Item = u8>> SimpleByteMsgWriter<Iter> {
             len_written: 0,
             finished: false,
         })
+    }
+
+    #[inline(always)]
+    pub fn bytes_left(self) -> usize {
+        self.msg_iter.count()
     }
 
     #[inline(always)]
@@ -503,7 +511,9 @@ impl Info {
             cli.save_img(index, path, img)?;
             if msg_writer.is_finished() { break }
         }
-
+        if !msg_writer.is_finished() {
+            return Err(Error::NotEnoughSizeOfInit(msg_writer.bytes_left()));
+        }
         Ok(())
     }
 }
@@ -577,7 +587,9 @@ fn main_inner() -> Result<()> {
                 }
                 SimpleHideType::File => {
                     let save_path = save.unwrap_or("file.bin".to_string());
-                    std::fs::write(&save_path, msg)?;
+                    if let Err(err) = std::fs::write(&save_path, msg) {
+                        return Err(Error::SaveProblem(err, save_path))
+                    }
                     println!("Done!\nfile saved into \"{save_path}\"");
                 }
                 _ => {
