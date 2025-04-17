@@ -1,0 +1,9 @@
+[package]
+name = "steganography"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+image = "0.25.6"
+thiserror = "2.0.12"
+clap = { version = "4.5.36", features = ["derive"] }
