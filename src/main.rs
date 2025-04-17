@@ -810,7 +810,10 @@ impl<I: Iterator<Item = u8>> OneHideBlockWriter<I> {
 
             while need_write != 0 {
                 // calc min value that can have a pixel_chan in the rest of chunk
-                let can_write_min = need_write.saturating_sub(((chunk.len(is_top) - 1) * self.max_chan_delta as usize) as u16);
+                // let can_write_min = need_write.saturating_sub(((chunk.len(is_top) - 1) * self.max_chan_delta as usize) as u16);
+                
+                // calc max value that can have a pixel_chan in the rest of chunk
+                let can_write_min = (self.max_chan_delta as u16).min(need_write);
                 need_write -= can_write_min;
                 
                 // update chunk value
@@ -954,8 +957,12 @@ impl Info {
 const HALF: u8 = u8::MAX / 2;
 
 fn main() {
+    let start = std::time::Instant::now();
+    
     if let Err(err) = main_inner() {
         println!("Error: {err}")
+    } else {
+        println!("\nduration: {}ms", start.elapsed().as_millis());
     }
 }
 fn main_inner() -> Result<()> {
