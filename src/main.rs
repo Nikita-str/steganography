@@ -1,4 +1,4 @@
-use std::{path::Path, string::FromUtf8Error};
+use std::{ffi::OsString, path::Path, string::FromUtf8Error};
 
 use image::{ImageError, ImageReader, RgbImage};
 use thiserror::Error;
@@ -9,7 +9,8 @@ use clap::{Parser, Subcommand};
 const MAX_BIT_PER_CHAN: u8 = 4;
 
 #[derive(Error, Debug)]
-enum Error {
+#[must_use]
+pub enum Error {
     #[error("Empty initial paths, use `--in` cli arg: `--in png_path_0 ... png_path_n`")]
     EmptyInit,
     #[error("Inconsistent lenght of modified paths, `--out` arg should have same amount of paths as `--in`")]
@@ -26,12 +27,52 @@ enum Error {
     ImageInconsistentSize(u32, u32, u32, u32),
     #[error("Invalid revealed message: {0}")]
     InvalidMsg(Box<FromUtf8Error>),
+    #[error("I/O error: {0}")]
+    ErrorIO(std::io::Error),
+    #[error("Unexpected byte({0}) of simple hide's type")]
+    InvalidSimpleHideTypeByte(u8),
+    #[error("Header was not readed (img too small)")]
+    UnreadedHeader,
+}
+// Implement From<ErrorA> for ErrorB
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Self::ErrorIO(err)
+    }
 }
 
 type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Parser, Debug)]
 struct Cli {
+    #[command(flatten)]
+    info: Info,
+
+    #[command(subcommand)]
+    cmd: CliCmd,
+
+    // TODO: reordering of pixels
+}
+#[derive(Debug, Subcommand)]
+enum CliCmd {
+    /// Hide a message into `.png`s 
+    SimpleHide {
+        #[arg(long)]
+        /// Message that is transmitted. 
+        /// It's better if the message encrypted before steganography.
+        msg: Msg,
+    },
+    /// Reveal a message from `.png`s
+    SimpleReveal {
+        #[arg(long)]
+        /// If message is not a text, but is a file, then it will be saved to this path. 
+        /// Otherwise into default: `file.bin`
+        save: Option<String>,
+    },
+}
+
+#[derive(Parser, Debug)]
+pub struct Info {
     #[arg(long = "init")]
     /// Paths of initial .png
     initial_img: Vec<String>,
@@ -44,33 +85,33 @@ struct Cli {
     /// Bits per pixel channel. (Preferably 1 or 2). 
     /// Not allowed to be more than 4.
     bits_per_pixel_chan: u8,
-
-    #[arg(short = 'x')]
-    /// If the flag setted 
-    decode: bool,
-
-    #[command(subcommand)]
-    cmd: CliCmd,
-
-    // TODO: reordering of pixels
-
 }
-#[derive(Debug, Subcommand)]
-enum CliCmd {
-    /// Hide a message into `.png`s 
-    SimpleHide {
-        #[arg(long)]
-        /// Message that is transmitted. 
-        /// It's better if the message encrypted before steganography.
-        msg: String,
-    },
-    /// Reveal a message from `.png`s
-    SimpleReveal { },
+
+#[derive(Debug, Clone)]
+enum Msg {
+    Txt(String),
+    File(String),
+}
+
+impl From<OsString> for Msg {
+    fn from(value: OsString) -> Self {
+        let Some(str) = value.to_str() else {
+            panic!("bad OS string (not a valid UTF-8): {value:?}")
+        };
+        
+        const FILE_PREFIX: &str = "file:";
+        if str.starts_with(FILE_PREFIX) {
+            Self::File(str[FILE_PREFIX.len()..].to_string())
+        } else {
+            Self::Txt(str.to_string())
+        }
+    }
 }
 
 impl Cli {
     pub fn cli() -> Result<Self> {
-        let mut cli = Cli::parse();
+        let mut cli_full = Cli::parse();
+        let cli = &mut cli_full.info;
         
         if cli.initial_img.len() == 0 { return Err(Error::EmptyInit) }
 
@@ -85,7 +126,7 @@ impl Cli {
             return Err(Error::TooBigDelta(cli.bits_per_pixel_chan))
         }
 
-        Ok(cli)
+        Ok(cli_full)
     }
 
     pub fn open_img(path: impl AsRef<Path>) -> RgbImage {
@@ -94,6 +135,24 @@ impl Cli {
             .decode()
             .expect("expected valid img")
             .into_rgb8()
+    }
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy)]
+pub enum SimpleHideType {
+    Txt = 1,
+    File = 2,
+    ReservedPre = 254,
+    Reserved = 255,
+}
+impl SimpleHideType {
+    pub fn try_from_u8(byte: u8) -> Option<Self> {
+        Some(match byte {
+            1 => Self::Txt,
+            2 => Self::File,
+            _ => return None,
+        })
     }
 }
 
@@ -187,24 +246,27 @@ impl SimpleByteReader {
 
 struct SimpleByteMsgWriter<Iter: Iterator<Item = u8>> {
     writer: SimpleByteWriter,
-    msg_len_bytes: [u8; 4],
+    header: Vec<u8>,
     msg_iter: Iter,
 
     len_written: usize,
     finished: bool,
 }
 impl<Iter: Iterator<Item = u8>> SimpleByteMsgWriter<Iter> {
-    pub fn new(msg_len: usize, msg_iter: Iter, bits_per_pixel_chan: u8) -> Result<Self> {        
+    pub fn new(msg_len: usize, msg_iter: Iter, bits_per_pixel_chan: u8, ty: SimpleHideType) -> Result<Self> {        
         if msg_len > u32::MAX as usize {
             return Err(Error::TooBigMsg)
         }
         
+        let mut header = Vec::with_capacity(5);
+        header.push(ty as u8);
         let msg_len_bytes = u32::to_le_bytes(msg_len as u32);
-        let writer = SimpleByteWriter::new(msg_len_bytes[0], bits_per_pixel_chan);
+        header.extend(msg_len_bytes);
+        let writer = SimpleByteWriter::new(header[0], bits_per_pixel_chan);
 
         Ok(Self{
             writer,
-            msg_len_bytes,
+            header,
             msg_iter,
             len_written: 0,
             finished: false,
@@ -218,7 +280,7 @@ impl<Iter: Iterator<Item = u8>> SimpleByteMsgWriter<Iter> {
 
     #[inline(always)]
     pub fn need_write_len(&self) -> bool {
-        self.len_written < 4
+        self.len_written < self.header.len()
     }
 
     #[inline(always)]
@@ -243,11 +305,10 @@ impl<Iter: Iterator<Item = u8>> SimpleByteMsgWriter<Iter> {
     /// * bool = ControlFlow::Break
     pub fn write_len(&mut self, chan_byte: &mut u8) -> bool {
         self.writer.update_byte(chan_byte);
-
         if self.writer.need_next() {
             self.len_written += 1;
             if self.need_write_len() {
-                let byte = self.msg_len_bytes[self.len_written];
+                let byte = self.header[self.len_written];
                 self.writer.set_next_byte(byte);
             } else {
                 self.set_next_byte_from_iter();
@@ -294,6 +355,7 @@ struct SimpleByteMsgReader {
     index_write: usize,
     msg_size: usize,
     msg: Option<Vec<u8>>,
+    ty: Option<SimpleHideType>,
 }
 impl SimpleByteMsgReader {
     pub fn new(bits_per_pixel_chan: u8) -> Self {
@@ -303,7 +365,13 @@ impl SimpleByteMsgReader {
             index_write: 0,
             msg_size: 0,
             msg: None,
+            ty: None,
         }
+    }
+
+    #[inline(always)]
+    pub fn need_read_ty(&self) -> bool {
+        self.ty.is_none()
     }
 
     #[inline(always)]
@@ -324,6 +392,18 @@ impl SimpleByteMsgReader {
     #[inline(always)]
     pub fn take_msg(self) -> Option<Vec<u8>> {
         self.msg
+    }
+
+    pub fn read_ty(&mut self, pixel_a: u8, pixel_b: u8) -> Result<bool> {
+        self.reader.update_byte(pixel_a, pixel_b);
+        if let Some(byte) = self.reader.take_if_next_done() {
+            match SimpleHideType::try_from_u8(byte) {
+                Some(ty) => { self.ty = Some(ty); }
+                _ => return Err(Error::InvalidSimpleHideTypeByte(byte)),
+            }
+            return Ok(true)
+        }
+        return Ok(false)
     }
 
     pub fn read_len(&mut self, pixel_a: u8, pixel_b: u8) -> bool {
@@ -355,8 +435,16 @@ impl SimpleByteMsgReader {
         false
     }
 
-    pub fn read(&mut self, chan_pair_iter: impl IntoIterator<Item = (u8, u8)>) {
+    pub fn read(&mut self, chan_pair_iter: impl IntoIterator<Item = (u8, u8)>) -> Result<()> {
         let mut chan_pair_iter = chan_pair_iter.into_iter();
+
+        if self.need_read_ty() {
+            loop {
+                let Some((pixel_a, pixel_b)) = chan_pair_iter.next() else { break };
+                if self.read_ty(pixel_a, pixel_b)? { break }
+            }
+        } 
+
         if self.need_read_len() {
             loop {
                 let Some((pixel_a, pixel_b)) = chan_pair_iter.next() else { break };
@@ -379,6 +467,44 @@ impl SimpleByteMsgReader {
                 }
             }
         }
+
+        Ok(())
+    }
+}
+
+
+impl Info {
+    fn save_img(&self, index: usize, path: &str, img: RgbImage) -> Result<()> {
+        let save_result = if let Some(out_paths) = &self.modified_img {
+            img.save_with_format(&out_paths[index], image::ImageFormat::Png)
+        } else {
+            let mut path = path.strip_suffix(".png").unwrap_or(&path).to_string();
+            path.push_str("_mod.png");
+            img.save_with_format(&path, image::ImageFormat::Png)
+        };
+        save_result.map_err(|err|Error::ImageSave(Box::new(err)))
+    }
+
+    pub fn simple_hide_bytes(self, msg: Vec<u8>, ty: SimpleHideType) -> Result<()> {
+        let cli = self;
+
+        let msg_len = msg.len();
+        let msg_iter = msg.into_iter();
+        let bits = cli.bits_per_pixel_chan;
+        let mut msg_writer = SimpleByteMsgWriter::new(msg_len, msg_iter, bits, ty)?;
+        
+        // TODO: it can be paralleled (by images & by chunks of pixels in an image)
+        for (index, path) in cli.initial_img.iter().enumerate() {
+            let mut img = Cli::open_img(path);
+
+            let chan_iter = img.pixels_mut().flat_map(|x|&mut x.0);
+            msg_writer.write(chan_iter);
+
+            cli.save_img(index, path, img)?;
+            if msg_writer.is_finished() { break }
+        }
+
+        Ok(())
     }
 }
 
@@ -391,36 +517,19 @@ fn main() {
 }
 fn main_inner() -> Result<()> {
     let cli = Cli::cli()?;
+    let (cli, cmd) = (cli.info, cli.cmd);
 
-    match &cli.cmd {
-        CliCmd::SimpleHide { msg } => {
-            let msg_len = msg.len();
-            let msg_iter = msg.as_bytes().iter().cloned();
-            let mut msg_writer = SimpleByteMsgWriter::new(msg_len, msg_iter, cli.bits_per_pixel_chan)?;
-            
-            // TODO: it can be paralleled (by images & by chunks of pixels in an image)
-            for (index, path) in cli.initial_img.iter().enumerate() {
-                let mut img = Cli::open_img(path);
-
-                let chan_iter = img.pixels_mut().flat_map(|x|&mut x.0);
-                msg_writer.write(chan_iter);
-
-                let save_result = if let Some(out_paths) = &cli.modified_img {
-                    img.save_with_format(&out_paths[index], image::ImageFormat::Png)
-                } else {
-                    let mut path = path.strip_suffix(".png").unwrap_or(&path).to_string();
-                    path.push_str("_mod.png");
-                    img.save_with_format(&path, image::ImageFormat::Png)
-                };
-                if let Err(err) = save_result {
-                    Error::ImageSave(Box::new(err));
-                }
-
-                if msg_writer.is_finished() { break }
-            }
+    match cmd {
+        CliCmd::SimpleHide { msg: Msg::Txt(msg) } => {
+            cli.simple_hide_bytes(msg.into_bytes(), SimpleHideType::Txt)?;
+        }
+        CliCmd::SimpleHide { msg: Msg::File(path) } => {
+            // TODO: can read it splitted/chunked, to make potential len infinity
+            let msg = std::fs::read(path)?;
+            cli.simple_hide_bytes(msg, SimpleHideType::File)?;
         }
         
-        CliCmd::SimpleReveal {  } => {
+        CliCmd::SimpleReveal { save } => {
             if cli.modified_img.is_none() {
                 return Err(Error::RevealWithoutModified);
             }
@@ -448,15 +557,32 @@ fn main_inner() -> Result<()> {
                 let chan_iter_a = img_a.pixels().flat_map(|x|&x.0).cloned();
                 let chan_iter_b = img_b.pixels().flat_map(|x|&x.0).cloned();
                 let chan_pair_iter = chan_iter_a.zip(chan_iter_b);
-                msg_reader.read(chan_pair_iter);
+                msg_reader.read(chan_pair_iter)?;
 
                 if msg_reader.is_finished() { break }
             }
 
-            if let Some(msg) = msg_reader.take_msg() {
-                let msg = String::from_utf8(msg)
-                    .map_err(|err|Error::InvalidMsg(Box::new(err)))?;
-                println!("msg: \"{msg}\"");
+            let Some(ty) = msg_reader.ty else {
+                return Err(Error::UnreadedHeader);
+            };
+            let Some(msg) = msg_reader.take_msg() else {
+                return Err(Error::UnreadedHeader);
+            };
+
+            match ty {
+                SimpleHideType::Txt => {
+                    let msg = String::from_utf8(msg)
+                        .map_err(|err|Error::InvalidMsg(Box::new(err)))?;
+                    println!("msg: \"{msg}\"");
+                }
+                SimpleHideType::File => {
+                    let save_path = save.unwrap_or("file.bin".to_string());
+                    std::fs::write(&save_path, msg)?;
+                    println!("Done!\nfile saved into \"{save_path}\"");
+                }
+                _ => {
+                    return Err(Error::InvalidSimpleHideTypeByte(ty as u8));      
+                }
             }
         }
     }
