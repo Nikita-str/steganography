@@ -51,6 +51,10 @@ impl ConstBytesReader {
         }
     }
     #[inline(always)]
+    pub fn is_not_started(&self) -> bool {
+        self.br.cur_bit == 0
+    }
+    #[inline(always)]
     pub fn is_done(&self) -> bool {
         self.br.is_done()
     }

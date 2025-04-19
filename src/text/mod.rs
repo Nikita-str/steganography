@@ -159,16 +159,17 @@ impl<'s> RepeatCharRevealArg<'s> {
         let mut init_iter = self.initial.chars();
         let mut mod_iter = self.modified.chars();
 
-        macro_rules! take_next_and_handle_err {
-            ($a: ident, $b: ident) => {
-                let Some($b) = mod_iter.next() else { break };
-                let Some($a) = init_iter.next() else {
-                    return Err(Error::InconsistentInitText)
-                };
-            };
-        }
 
         'one_bit_chunk: loop {
+            macro_rules! take_next_and_handle_err {
+                ($a: ident, $b: ident) => {
+                    let Some($b) = mod_iter.next() else { break 'one_bit_chunk };
+                    let Some($a) = init_iter.next() else {
+                        return Err(Error::InconsistentInitText)
+                    };
+                };
+            }
+
             let mut chunk_index = 0;
             let mut bit = 0;
 
@@ -192,6 +193,7 @@ impl<'s> RepeatCharRevealArg<'s> {
                 ret.push(byte);
             }
         }
+        assert!(reader.is_not_started());
 
         Ok(ret)
     }
@@ -252,7 +254,11 @@ mod tests {
             (INIT.repeat(17 * 8 * 2 + 1), INIT, 17),
             (". ".repeat(2000), "прыг-скок", 5),
             (" ".repeat(900), "прыг-скок", 6),
-            (".".repeat(2000), "прыг-скок", 7),
+            (" ".repeat(900 - 10), "прыг-скок", 6),
+            (" ".repeat(900 - 12), "прыг-скок", 6),
+            (" ".repeat(900 - 14), "прыг-скок", 6),
+            (" ".repeat(900 - 15), "прыг-скок", 6),
+            (".".repeat(2000), "прыг+скок", 7),
             ("x".repeat(16_500), "вот и хорошо, вот и баиньки", 42),
         ];
 
