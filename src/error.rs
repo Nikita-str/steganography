@@ -36,6 +36,8 @@ pub enum Error {
     NotEnoughSizeOfInit(usize),
     #[error("Path({0}) is not a file.")]
     PathIsNotAFile(std::path::PathBuf),
+    #[error("Inconsistent initial text")]
+    InconsistentInitText,
     #[error("{0}")]
     Other(String),
 }

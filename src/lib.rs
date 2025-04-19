@@ -1,4 +1,5 @@
 pub mod png;
+pub mod text;
 
 mod error;
 mod msg;

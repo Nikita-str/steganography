@@ -180,7 +180,6 @@ impl<'a, 'b> TopBottomChunks<'a, 'b> {
     }
 }
 
-
 pub struct AvgSumHideBlockWriter<I> {
     iter_bw: IterByteWriter<I>,
     sum: u16,
