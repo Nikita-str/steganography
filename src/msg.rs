@@ -25,6 +25,11 @@ impl Msg {
             }
         }
     }
+    
+    pub fn into_pair(self) -> Result<(Vec<u8>, MsgType)> {
+        let ty = self.ty();
+        self.into_bytes().map(|x|(x, ty))
+    }
 }
 
 impl From<OsString> for Msg {

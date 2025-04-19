@@ -7,3 +7,7 @@ edition = "2024"
 image = "0.25.6"
 thiserror = "2.0.12"
 clap = { version = "4.5.36", features = ["derive"] }
+
+[profile.release]
+codegen-units = 4
+# lto = true

@@ -8,6 +8,8 @@ use crate::MAX_BIT_PER_CHAN;
 pub enum Error {
     #[error("Empty initial paths, use `--init` cli arg: `--init png_path_0 ... png_path_n`")]
     EmptyInit,
+    #[error("Empty modified paths on reveal stage; use `--mod`")]
+    EmptyModified,
     #[error("Inconsistent lenght of modified paths, `--modt` arg should have same amount of paths as `--init`")]
     InconsistModLen,
     #[error("The delta {0} is too big, should be no more than {MAX_BIT_PER_CHAN}")]
@@ -32,6 +34,10 @@ pub enum Error {
     UnreadedHeader,
     #[error("Not enough size of initial images in total (need to hide {0} bytes more). To fix it add more images into `--init` arg.")]
     NotEnoughSizeOfInit(usize),
+    #[error("Path({0}) is not a file.")]
+    PathIsNotAFile(std::path::PathBuf),
+    #[error("{0}")]
+    Other(String),
 }
 impl Error {
     pub fn test_too_big_msg(msg_len: usize) -> Result<()> {
