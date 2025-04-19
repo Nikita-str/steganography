@@ -54,8 +54,8 @@ pub struct AvgSumHideArgs {
     pub chunk_size: u8,
 }
 impl AvgSumHideArgs {
-    const SUM_HEADER_CHUNK_SZ: u8 = 8;
-    const SUM_HEADER_BITS_PER_CHUNK: u8 = 4;
+    const HEADER_CHUNK_SIZE: u8 = 8;
+    const HEADER_BITS_PER_CHUNK: u8 = 4;
 
     pub fn header_writer(&self) -> Result<AvgSumHideBlockWriter<impl Iterator<Item = u8> + 'static>> {
         let msg_len = self.msg.len();
@@ -65,8 +65,8 @@ impl AvgSumHideArgs {
 
         Ok(AvgSumHideBlockWriter::new(
             header, 
-            Self::SUM_HEADER_BITS_PER_CHUNK, 
-            Self::SUM_HEADER_CHUNK_SZ,
+            Self::HEADER_BITS_PER_CHUNK, 
+            Self::HEADER_CHUNK_SIZE,
         ))
     }
 
@@ -169,71 +169,43 @@ pub struct AvgSumRevealArgs {
 impl AvgSumRevealArgs {
     pub fn reveal(&self) -> Result<(Vec<u8>, MsgType)> {
         const HEADER_SIZE: usize = 7;
-        const HEADER_CHUNK_SIZE: u8 = 8;
-        const HEADER_BITS_PER_CHUNK: u8 = 4;
 
-        let mut chunk_size = HEADER_CHUNK_SIZE;
-        let mut bits_per_chunk = HEADER_BITS_PER_CHUNK;
-        let mut rem = 1u16 << bits_per_chunk;
-        let mut sum;
-        let mut header_reader = ConstBytesReader::new(bits_per_chunk);
-        let mut header = Vec::with_capacity(HEADER_SIZE);
+        let mut chunk_size = AvgSumHideArgs::HEADER_CHUNK_SIZE;
+        let mut bits_per_chunk = AvgSumHideArgs::HEADER_BITS_PER_CHUNK;
+        let mut header_reader = AvgSumChunkReader::new(HEADER_SIZE, chunk_size, bits_per_chunk);
         let mut ty = MsgType::Reserved;
-        let mut msg_len = 0;
         
-        let mut msg_reader: Option<(ConstBytesReader, Vec<u8>)> = None;
+        let mut msg_reader: Option<AvgSumChunkReader> = None;
 
         // TODO: it can be paralleled (by images & by chunks of pixels in an image)
         'modi: for path in &self.modified_img {
             let img = Img::open_img(path);
             let mut chan_iter = img.img.pixels().flat_map(|x|&x.0).cloned();
 
-            while header.len() != HEADER_SIZE {
-                sum = 0;
-                for _ in 0..chunk_size {
-                    if let Some(byte) = chan_iter.next() {
-                        sum += byte as u16;
-                    } else {
-                        continue 'modi
-                    }
-                }
+            if header_reader.read_while_can(&mut chan_iter) {
+                continue 'modi
+            } else if msg_reader.is_none() {
+                assert_eq!(header_reader.buf.len(), HEADER_SIZE);
 
-                let part_of_byte = sum % rem;
-                if let Some(byte) = header_reader.try_take_next_le_byte(part_of_byte as u8) {
-                    header.push(byte)
-                }
-            }
-
-            if header.len() == HEADER_SIZE {
+                let header = &header_reader.buf;
                 match MsgType::try_from_u8(header[0]) {
                     Some(ty_x) => ty = ty_x,
                     _ => return Err(Error::InvalidMsgTypeByte(header[0])),
                 };
+
                 bits_per_chunk = header[1];
-                rem = 1u16 << bits_per_chunk;
                 chunk_size = header[2];
-                let len_bytes: [u8; 4] = header[HEADER_SIZE - 4..HEADER_SIZE].try_into().unwrap();
-                msg_len = u32::from_le_bytes(len_bytes) as usize;
                 
-                let msg = Vec::with_capacity(msg_len);
-                msg_reader = Some((ConstBytesReader::new(bits_per_chunk), msg));
+                let len_bytes: [u8; 4] = header[HEADER_SIZE - 4..HEADER_SIZE].try_into().unwrap();
+                let msg_len = u32::from_le_bytes(len_bytes) as usize;
+
+                let reader = AvgSumChunkReader::new(msg_len, chunk_size, bits_per_chunk);
+                msg_reader = Some(reader);
             }
             
-            if let Some((msg_reader, msg)) = &mut msg_reader {
-                while msg.len() != msg_len {
-                    sum = 0;
-                    for _ in 0..chunk_size {
-                        if let Some(byte) = chan_iter.next() {
-                            sum += byte as u16;
-                        } else {
-                            continue 'modi
-                        }
-                    }
-
-                    let part_of_byte = sum % rem;
-                    if let Some(byte) = msg_reader.try_take_next_le_byte(part_of_byte as u8) {
-                        msg.push(byte)
-                    }
+            if let Some(msg_reader) = &mut msg_reader { 
+                if msg_reader.read_while_can(&mut chan_iter) {
+                    continue 'modi
                 }
 
                 break 'modi
@@ -243,9 +215,51 @@ impl AvgSumRevealArgs {
         if ty.is_reserved() {
             return Err(Error::UnreadedHeader);
         }
-        let Some((_, msg)) = msg_reader else {
+        let Some(msg_reader) = msg_reader else {
             return Err(Error::UnreadedHeader);
         };
-        Ok((msg, ty))
+        Ok((msg_reader.buf, ty))
+    }
+}
+
+struct AvgSumChunkReader {
+    reader: ConstBytesReader,
+    buf: Vec<u8>,
+    expected_size: usize,
+    chunk_size: u8,
+    rem: u16,
+}
+impl AvgSumChunkReader {
+    fn new(expected_size: usize, chunk_size: u8, bits_per_chunk: u8) -> Self {
+        let rem = 1u16 << bits_per_chunk;
+        let reader = ConstBytesReader::new(bits_per_chunk);
+        let buf = Vec::with_capacity(expected_size);
+        Self {
+            reader,
+            buf,
+            expected_size,
+            chunk_size,
+            rem,
+        }
+    }
+    /// # Result
+    /// is iter ended
+    fn read_while_can(&mut self, mut chan_iter: impl Iterator<Item = u8>) -> bool {
+        while self.buf.len() != self.expected_size {
+            let mut sum = 0;
+            for _ in 0..self.chunk_size {
+                if let Some(byte) = chan_iter.next() {
+                    sum += byte as u16;
+                } else {
+                    return true
+                }
+            }
+
+            let part_of_byte = sum % self.rem;
+            if let Some(byte) = self.reader.try_take_next_le_byte(part_of_byte as u8) {
+                self.buf.push(byte)
+            }
+        }
+        false
     }
 }
