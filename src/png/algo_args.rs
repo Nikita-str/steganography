@@ -74,34 +74,23 @@ impl AvgSumHideArgs {
         let mut header_writer = self.header_writer()?;
         let mut msg_writer = AvgSumHideBlockWriter::new(self.msg, self.bits_per_chunk, self.chunk_size);
 
-        let mut chunk_buf_top: Vec<&mut u8> = Vec::with_capacity(MAX_WIN_SZ as usize);
-        let mut chunk_buf_bottom: Vec<&mut u8> = Vec::with_capacity(MAX_WIN_SZ as usize);
-
         'init: for (index, path) in self.initial_img.iter().enumerate() {
             let mut img = Img::open_img(path);
 
             let mut chan_iter = img.img.pixels_mut().flat_map(|x|&mut x.0);
  
-            // here we change lifetime of references in chunk
-            // [Safety]:
-            //     Chunk is always clear; 
-            //     On each iteration we address only ref of current iteration.
-            //     No one ref pointed to the same point
-            let mut chunks = TopBottomChunks {
+            let mut chunk_buf_top: Vec<&mut u8> = Vec::with_capacity(MAX_WIN_SZ as usize);
+            let mut chunk_buf_bottom: Vec<&mut u8> = Vec::with_capacity(MAX_WIN_SZ as usize);
+            
+            let chunks = &mut TopBottomChunks {
                 chunk_top: &mut chunk_buf_top,
                 chunk_bottom: &mut chunk_buf_bottom,
             };
-            let chunk: &mut TopBottomChunks = unsafe { std::mem::transmute(&mut chunks) };
-
-            // let mut chunk_buf_top: Vec<&mut u8> = Vec::with_capacity(MAX_WIN_SZ as usize);
-            // let mut chunk_buf_bottom: Vec<&mut u8> = Vec::with_capacity(MAX_WIN_SZ as usize);
 
             if !header_writer.is_done() {
-                chunk.clear();
                 loop {
-                    let flags = header_writer.write_bits(chunk, &mut chan_iter);
+                    let flags = header_writer.write_bits(chunks, &mut chan_iter);
                     if flags.continue_init {
-                        chunk.clear();
                         img.save_img(&self.modified_img, index)?;
                         continue 'init
                     }
@@ -110,11 +99,9 @@ impl AvgSumHideArgs {
             }
 
             if !msg_writer.is_done() {
-                chunk.clear();
                 loop {
-                    let flags = msg_writer.write_bits(chunk, &mut chan_iter);
+                    let flags = msg_writer.write_bits(chunks, &mut chan_iter);
                     if flags.continue_init {
-                        chunk.clear();
                         img.save_img(&self.modified_img, index)?;
                         continue 'init
                     }
@@ -122,7 +109,6 @@ impl AvgSumHideArgs {
                 }
             }
 
-            chunk.clear();
             img.save_img(&self.modified_img, index)?;
             if msg_writer.is_done() { break }
         }
