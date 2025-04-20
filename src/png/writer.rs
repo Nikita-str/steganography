@@ -286,9 +286,6 @@ impl<Iter: Iterator<Item = u8>> super::algo_args::HiderWriter for AvgSumHideBloc
     }
 
     fn bytes_left(&mut self) -> usize {
-        let mut ret = 0;
-        let iter = self.iter_bw.iter_mut();
-        iter.for_each(|_|ret += 1);
-        ret
+        self.iter_bw.bytes_left()
     }
 }

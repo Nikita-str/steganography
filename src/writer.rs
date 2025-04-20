@@ -87,15 +87,15 @@ impl<I: Iterator<Item = u8>> IterByteWriter<I> {
 
     /// # Args
     /// * `f_write` should return `true` if value is writen, otherwise `false`
+    /// # Return
+    /// * `true` if all data is written
     pub fn write_bits<F>(&mut self, mut f_write: F) -> bool
     where F: FnMut(u8) -> bool
     {
         let next_bits = self.next_bits.take().unwrap_or_else(||self.bw.next());
         if !f_write(next_bits) {
             self.next_bits = Some(next_bits);
-        }
-
-        if self.bw.is_done() {
+        } else if self.bw.is_done() {
             if let Some(byte) = self.iter.next() {
                 self.bw.set_new_byte(byte);
             } else {
@@ -112,5 +112,14 @@ impl<I: Iterator<Item = u8>> IterByteWriter<I> {
     }
     pub fn iter_mut(&mut self) -> &mut I {
         &mut self.iter
+    }
+}
+impl<I: Iterator<Item = u8>> crate::png::algo_args::HiderWriter for IterByteWriter<I> {
+    fn is_done(&self) -> bool {
+        self.is_done()
+    }
+
+    fn bytes_left(&mut self) -> usize {
+        self.iter_mut().fold(0, |a, _| a + 1)
     }
 }

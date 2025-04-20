@@ -1,9 +1,11 @@
-use image::RgbImage;
+use image::{Rgb, RgbImage};
+use rand::RngCore;
 
-use crate::prelude::*;
+use crate::{prelude::*, PSEUDO_RAND_INDEXES};
 use crate::png::prelude::*;
 use crate::png::writer::TopBottomChunks;
 use crate::reader::ConstBytesReader;
+use crate::writer::IterByteWriter;
 
 macro_rules! paths_pair {
     ($x: ident) => {
@@ -12,6 +14,10 @@ macro_rules! paths_pair {
             modified_img: &$x.modified_img
         }
     };
+}
+struct PathsPair<'a> {
+    initial_img: &'a Vec<String>,
+    modified_img: &'a ImgPaths,
 }
 
 pub struct DeltaHideArgs {
@@ -34,7 +40,7 @@ impl DeltaHideArgs {
         let mut msg_writer = DeltaByteMsgWriter::new(msg_len, msg_iter, self.bits, self.ty)?;
         
         // TODO: it can be paralleled (by images & by chunks of pixels in an image)
-        msg_writer.hider_loop(paths, |msg_writer, img| {
+        hider_loop(&mut msg_writer, paths, |msg_writer, img| {
             let chan_iter = img.pixels_mut().flat_map(|x|&mut x.0);
             msg_writer.write(chan_iter);
             Ok(())
@@ -79,7 +85,7 @@ impl AvgSumHideArgs {
         let mut header_writer = self.header_writer()?;
         let mut msg_writer = AvgSumHideBlockWriter::new(self.msg, self.bits_per_chunk, self.chunk_size);
 
-        msg_writer.hider_loop(paths, |msg_writer, img|{
+        hider_loop(&mut msg_writer, paths, |msg_writer, img|{
             let mut chan_iter = img.pixels_mut().flat_map(|x|&mut x.0);
  
             let mut chunk_buf_top: Vec<&mut u8> = Vec::with_capacity(MAX_WIN_SZ as usize);
@@ -257,28 +263,197 @@ impl AvgSumChunkReader {
     }
 }
 
-pub(in super) struct PathsPair<'a> {
-    initial_img: &'a Vec<String>,
-    modified_img: &'a ImgPaths,
+pub struct RemainderHider<ByteIter> {
+    pub msg: ByteIter,
+    pub ty: MsgType,
+
+    pub initial_img: Vec<String>,
+    pub modified_img: ImgPaths,
+    
+    /// Bits per chunk.
+    /// Max value is 4.
+    pub bits: u8,
+
+    /// Gray output mode
+    pub gray: bool,
+}
+impl<ByteIter: IntoIterator<Item = u8>> RemainderHider<ByteIter> {
+    pub fn transmute_msg(self) -> RemainderHider<ByteIter::IntoIter> {
+        RemainderHider {
+            msg: self.msg.into_iter(),
+            ty: self.ty,
+            initial_img: self.initial_img,
+            modified_img: self.modified_img,
+            bits: self.bits,
+            gray: self.gray,
+        }
+    }
+}
+impl<ByteIter: ExactSizeIterator<Item = u8>> RemainderHider<ByteIter> {
+    fn header_writer(&self) -> Result<RemainderHiderWriter<impl Iterator<Item = u8> + 'static>> {        
+        let mut header = vec![];
+        
+        let mut rng = rand::rng();
+        let mut rand_bits = rng.next_u32(); // TODO: need to possibility of adding noise
+        if self.gray {
+            rand_bits &= !1u32;
+        } else {
+            rand_bits |= 1u32;
+        }
+        header.extend((rand_bits as u32).to_le_bytes());
+
+        let msg_len = self.msg.len();
+        Error::test_too_big_msg(msg_len)?;
+        header.extend((msg_len as u32).to_le_bytes());
+
+        assert!(self.bits <= 4);
+        let bits_and_gray = (self.gray as u8) << 7;
+        header.extend([self.ty as u8, bits_and_gray]);
+
+        Ok(RemainderHiderWriter::new(header.into_iter(), 1))
+    }
+
+    pub fn hide(self) -> Result<()> {
+        let paths = paths_pair!(self);
+        let mut header_writer = self.header_writer()?;
+        let mut msg_writer = RemainderHiderWriter::new(self.msg, self.bits);
+
+        if !self.gray {
+            hider_loop(&mut msg_writer, paths, |msg_writer, img|{
+                let mut chan_iter = img.pixels_mut().flat_map(|x|&mut x.0);
+                header_writer.write_while_can(&mut chan_iter);
+                msg_writer.write_while_can(&mut chan_iter);
+                msg_writer.imitate(&mut chan_iter);
+                Ok(())
+            })
+        } else {
+            hider_loop(&mut msg_writer, paths, |msg_writer, img|{
+                let mut pixel_iter = img.pixels_mut();
+                header_writer.write_while_can_gray(&mut pixel_iter);
+                msg_writer.write_while_can_gray(&mut pixel_iter);
+                msg_writer.imitate_gray(&mut pixel_iter);
+                Ok(())
+            })
+        }
+    }
+}
+struct RemainderHiderWriter<I> {
+    iter_bw: IterByteWriter<I>,
+    mask: u8,
+}
+impl<I: Iterator<Item = u8>> RemainderHiderWriter<I> {
+    pub fn new(iter: I, bits: u8) -> Self {
+        Self {
+            iter_bw: IterByteWriter::new(iter, bits),
+            mask: !((1u8 << bits) - 1),
+        }
+    }
+
+    /// # Return
+    /// * `true` if all data is written
+    pub fn write_while_can<'a>(&mut self, mut chan_iter: impl Iterator<Item = &'a mut u8>) -> bool {
+        while !self.iter_bw.is_done() {
+            let Some(byte) = chan_iter.next() else {
+                return false
+            };
+
+            self.iter_bw.write_bits(|part_of_byte|{
+                *byte &= self.mask;  
+                *byte |= part_of_byte;
+                true
+            });
+        }
+        true
+    }
+
+    /// # Return
+    /// * `true` if all data is written
+    pub fn imitate<'a>(&self, mut chan_iter: impl Iterator<Item = &'a mut u8>) {
+        let bits = 1 + !self.mask;
+        for index in 0.. {
+            let Some(byte) = chan_iter.next() else {
+                return
+            };
+
+            let part_of_byte = PSEUDO_RAND_INDEXES[index % 256] as u8 % bits;
+            *byte &= self.mask;  
+            *byte |= part_of_byte;
+        }
+    }
+
+    fn pixel_gray_hide(rgb: &mut Rgb<u8>, mask: u8, part_of_byte: u8) {
+        let r = rgb.0[0] as u16;
+        let g = rgb.0[1] as u16;
+        let b = rgb.0[2] as u16;
+
+        // grayscale coefs: 299  587  114  (total: 1000)
+        //          approx: 300  575  125  (total: 1000)
+        //          div 25:  12   23    5  (total:   40)
+        let gray = 12 * r + 23 * g + 5 * b;
+        let mut gray = (gray / 40) as u8;
+        
+        gray &= mask;  
+        gray |= part_of_byte;
+
+        rgb.0 = [gray, gray, gray];
+    }
+
+    /// # Return
+    /// * `true` if all data is written
+    pub fn write_while_can_gray<'a>(&mut self, mut pixel_iter: impl Iterator<Item = &'a mut Rgb<u8>>) -> bool {
+        while !self.iter_bw.is_done() {
+            let Some(rgb) = pixel_iter.next() else {
+                return false
+            };
+
+            self.iter_bw.write_bits(|part_of_byte|{
+                Self::pixel_gray_hide(rgb, self.mask, part_of_byte);
+                true
+            });
+        }
+        true
+    }
+
+    pub fn imitate_gray<'a>(&self, mut pixel_iter: impl Iterator<Item = &'a mut Rgb<u8>>) {
+        let bits = 1 + !self.mask;
+        for index in 0.. {
+            let Some(rgb) = pixel_iter.next() else {
+                return
+            };
+
+            let part_of_byte = PSEUDO_RAND_INDEXES[index % 256] as u8 % bits;
+            Self::pixel_gray_hide(rgb, self.mask, part_of_byte);
+        }
+    }
+}
+impl<I: Iterator<Item = u8>> HiderWriter for RemainderHiderWriter<I> {
+    fn is_done(&self) -> bool {
+        self.iter_bw.is_done()
+    }
+    fn bytes_left(&mut self) -> usize {
+        self.iter_bw.bytes_left()
+    }
 }
 
-pub(in super) trait HiderWriter {
+pub(in crate) trait HiderWriter {
     fn is_done(&self) -> bool;
     fn bytes_left(&mut self) -> usize;
+}
 
-    fn hider_loop<'a, F>(&mut self, paths: PathsPair<'a>, mut img_f: F) -> Result<()>
-    where F: FnMut(&mut Self, &mut RgbImage) -> Result<()>
-    {
-        for (index, path) in paths.initial_img.iter().enumerate() {
-            let mut img = Img::open_img(path);
-            img_f(self, &mut img.img)?;
-            img.save_img(paths.modified_img, index)?;
-            if self.is_done() { break }
-        }
-
-        if !self.is_done() {
-            return Err(Error::NotEnoughSizeOfInit(self.bytes_left()));
-        }
-        Ok(())
+fn hider_loop<'a, H, F>(writer: &mut H, paths: PathsPair<'a>, mut img_f: F) -> Result<()>
+where
+    H: HiderWriter,
+    F: FnMut(&mut H, &mut RgbImage) -> Result<()>
+{
+    for (index, path) in paths.initial_img.iter().enumerate() {
+        let mut img = Img::open_img(path);
+        img_f(writer, &mut img.img)?;
+        img.save_img(paths.modified_img, index)?;
+        if writer.is_done() { break }
     }
+
+    if !writer.is_done() {
+        return Err(Error::NotEnoughSizeOfInit(writer.bytes_left()));
+    }
+    Ok(())
 }
