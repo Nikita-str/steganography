@@ -1,7 +1,18 @@
+use image::RgbImage;
+
 use crate::prelude::*;
 use crate::png::prelude::*;
 use crate::png::writer::TopBottomChunks;
 use crate::reader::ConstBytesReader;
+
+macro_rules! paths_pair {
+    ($x: ident) => {
+        PathsPair { 
+            initial_img: &$x.initial_img, 
+            modified_img: &$x.modified_img
+        }
+    };
+}
 
 pub struct DeltaHideArgs {
     pub msg: Vec<u8>,
@@ -17,24 +28,17 @@ pub struct DeltaHideArgs {
 
 impl DeltaHideArgs {
     pub fn hide(self) -> Result<()> {
+        let paths = paths_pair!(self);
         let msg_len = self.msg.len();
         let msg_iter = self.msg.into_iter();
         let mut msg_writer = DeltaByteMsgWriter::new(msg_len, msg_iter, self.bits, self.ty)?;
         
         // TODO: it can be paralleled (by images & by chunks of pixels in an image)
-        for (index, path) in self.initial_img.iter().enumerate() {
-            let mut img = Img::open_img(path);
-
-            let chan_iter = img.img.pixels_mut().flat_map(|x|&mut x.0);
+        msg_writer.hider_loop(paths, |msg_writer, img| {
+            let chan_iter = img.pixels_mut().flat_map(|x|&mut x.0);
             msg_writer.write(chan_iter);
-
-            img.save_img(&self.modified_img, index)?;
-            if msg_writer.is_done() { break }
-        }
-        if !msg_writer.is_done() {
-            return Err(Error::NotEnoughSizeOfInit(msg_writer.bytes_left()));
-        }
-        Ok(())
+            Ok(())
+        })
     }
 }
 
@@ -71,13 +75,12 @@ impl AvgSumHideArgs {
     }
 
     pub fn hide(self) -> Result<()> {
+        let paths = paths_pair!(self);
         let mut header_writer = self.header_writer()?;
         let mut msg_writer = AvgSumHideBlockWriter::new(self.msg, self.bits_per_chunk, self.chunk_size);
 
-        'init: for (index, path) in self.initial_img.iter().enumerate() {
-            let mut img = Img::open_img(path);
-
-            let mut chan_iter = img.img.pixels_mut().flat_map(|x|&mut x.0);
+        msg_writer.hider_loop(paths, |msg_writer, img|{
+            let mut chan_iter = img.pixels_mut().flat_map(|x|&mut x.0);
  
             let mut chunk_buf_top: Vec<&mut u8> = Vec::with_capacity(MAX_WIN_SZ as usize);
             let mut chunk_buf_bottom: Vec<&mut u8> = Vec::with_capacity(MAX_WIN_SZ as usize);
@@ -90,10 +93,7 @@ impl AvgSumHideArgs {
             if !header_writer.is_done() {
                 loop {
                     let flags = header_writer.write_bits(chunks, &mut chan_iter);
-                    if flags.continue_init {
-                        img.save_img(&self.modified_img, index)?;
-                        continue 'init
-                    }
+                    if flags.continue_init { return Ok(()) }
                     if flags.is_done { break }
                 }
             }
@@ -101,22 +101,12 @@ impl AvgSumHideArgs {
             if !msg_writer.is_done() {
                 loop {
                     let flags = msg_writer.write_bits(chunks, &mut chan_iter);
-                    if flags.continue_init {
-                        img.save_img(&self.modified_img, index)?;
-                        continue 'init
-                    }
+                    if flags.continue_init { return Ok(()) }
                     if flags.is_done { break }
                 }
             }
-
-            img.save_img(&self.modified_img, index)?;
-            if msg_writer.is_done() { break }
-        }
-
-        if !msg_writer.is_done() {
-            return Err(Error::NotEnoughSizeOfInit(msg_writer.bytes_left()));
-        }
-        Ok(())
+            Ok(())
+        })
     }
 }
 
@@ -218,6 +208,9 @@ impl AvgSumRevealArgs {
         let Some(msg_reader) = msg_reader else {
             return Err(Error::UnreadedHeader);
         };
+        if msg_reader.buf.len() != msg_reader.expected_size {
+            return Err(Error::UnfullResult(msg_reader.expected_size - msg_reader.buf.len()));
+        }
         Ok((msg_reader.buf, ty))
     }
 }
@@ -261,5 +254,31 @@ impl AvgSumChunkReader {
             }
         }
         false
+    }
+}
+
+pub(in super) struct PathsPair<'a> {
+    initial_img: &'a Vec<String>,
+    modified_img: &'a ImgPaths,
+}
+
+pub(in super) trait HiderWriter {
+    fn is_done(&self) -> bool;
+    fn bytes_left(&mut self) -> usize;
+
+    fn hider_loop<'a, F>(&mut self, paths: PathsPair<'a>, mut img_f: F) -> Result<()>
+    where F: FnMut(&mut Self, &mut RgbImage) -> Result<()>
+    {
+        for (index, path) in paths.initial_img.iter().enumerate() {
+            let mut img = Img::open_img(path);
+            img_f(self, &mut img.img)?;
+            img.save_img(paths.modified_img, index)?;
+            if self.is_done() { break }
+        }
+
+        if !self.is_done() {
+            return Err(Error::NotEnoughSizeOfInit(self.bytes_left()));
+        }
+        Ok(())
     }
 }

@@ -7,6 +7,9 @@ use crate::reader::ConstBytesReader;
 use crate::writer::IterByteWriter;
 use crate::{Error, Result};
 
+// TODO: exchange [a -> o; i -> e;]
+// TODO: chunked repeat wo key (count amount of repeatness in chunk % 2)
+
 pub trait RepeatTypo {
     fn next_typo(&mut self, not: char) -> char;
 }
@@ -119,7 +122,10 @@ impl<'s, Typo: RepeatTypo> RepeatCharHideArg<'s, Typo> {
             if bit_reader.is_done() { break }
 
             let mut bit = false;
-            bit_reader.write_bits(|x|bit = x > 0);
+            bit_reader.write_bits(|x|{
+                bit = x > 0;
+                true
+            });
 
             if bit {
                 if Self::write_bit_1(&mut ret, rng, &mut char_iter, typo, self.bit_freq) {

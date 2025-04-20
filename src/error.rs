@@ -34,6 +34,8 @@ pub enum Error {
     UnreadedHeader,
     #[error("Not enough size of initial images in total (need to hide {0} bytes more). To fix it add more images into `--init` arg.")]
     NotEnoughSizeOfInit(usize),
+    #[error("The output file readed unfully (maybe there are more modified pics?); need read {0} bytes more")]
+    UnfullResult(usize),
     #[error("Path({0}) is not a file.")]
     PathIsNotAFile(std::path::PathBuf),
     #[error("Inconsistent initial text")]

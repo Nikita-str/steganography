@@ -4,6 +4,11 @@ use steganography::prelude::*;
 use steganography::png::algo_args as args;
 use steganography::png::prelude::*;
 
+// TODO: text Cli
+// TODO: text file
+// TODO: text in code comment
+
+// TODO: chacha8rng for noise 
 
 #[derive(Parser, Debug)]
 pub struct Cli {
@@ -52,7 +57,7 @@ pub enum CliCmd {
         /// Max value is 6.
         bits_per_chunk: u8,
 
-        #[arg(short, default_value_t = 8)]
+        #[arg(short, long, default_value_t = 8)]
         /// Size of a chunk.
         /// Max value is 64.
         chunk_size: u8,

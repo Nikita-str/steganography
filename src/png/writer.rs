@@ -137,6 +137,18 @@ impl<Iter: Iterator<Item = u8>> DeltaByteMsgWriter<Iter> {
         }
     }
 }
+impl<Iter: Iterator<Item = u8>> super::algo_args::HiderWriter for DeltaByteMsgWriter<Iter> {
+    fn is_done(&self) -> bool {
+        self.is_done()
+    }
+
+    fn bytes_left(&mut self) -> usize {
+        let mut ret = 0;
+        let iter = &mut self.msg_iter;
+        iter.for_each(|_|ret += 1);
+        ret
+    }
+}
 
 
 #[derive(Default)]
@@ -230,7 +242,7 @@ impl<I: Iterator<Item = u8>> AvgSumHideBlockWriter<I> {
                     chunk.push(x);
                 } else {
                     flags.continue_init = true;
-                    return;
+                    return false;
                 }
             }
             
@@ -262,8 +274,21 @@ impl<I: Iterator<Item = u8>> AvgSumHideBlockWriter<I> {
                 
                 self.pseudo_rand_index = self.pseudo_rand_index.wrapping_add(1);
             }
+            true
         });
         chunk.clear();
         flags
+    }
+}
+impl<Iter: Iterator<Item = u8>> super::algo_args::HiderWriter for AvgSumHideBlockWriter<Iter> {
+    fn is_done(&self) -> bool {
+        self.is_done()
+    }
+
+    fn bytes_left(&mut self) -> usize {
+        let mut ret = 0;
+        let iter = self.iter_bw.iter_mut();
+        iter.for_each(|_|ret += 1);
+        ret
     }
 }

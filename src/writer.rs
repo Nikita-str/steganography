@@ -65,6 +65,7 @@ impl ConstBytesWriter {
 pub struct IterByteWriter<I> {
     bw: ConstBytesWriter,
     iter: I,
+    next_bits: Option<u8>,
     is_done: bool,
 }
 impl<I: Iterator<Item = u8>> IterByteWriter<I> {
@@ -75,6 +76,7 @@ impl<I: Iterator<Item = u8>> IterByteWriter<I> {
         Self {
             bw: ConstBytesWriter::new(first_byte.unwrap_or(0), bits),
             iter,
+            next_bits: None,
             is_done: first_byte.is_none(),
         }
     }
@@ -83,11 +85,15 @@ impl<I: Iterator<Item = u8>> IterByteWriter<I> {
         self.is_done
     }
 
+    /// # Args
+    /// * `f_write` should return `true` if value is writen, otherwise `false`
     pub fn write_bits<F>(&mut self, mut f_write: F) -> bool
-    where F: FnMut(u8)
+    where F: FnMut(u8) -> bool
     {
-        let next_bits = self.bw.next();
-        f_write(next_bits);
+        let next_bits = self.next_bits.take().unwrap_or_else(||self.bw.next());
+        if !f_write(next_bits) {
+            self.next_bits = Some(next_bits);
+        }
 
         if self.bw.is_done() {
             if let Some(byte) = self.iter.next() {
@@ -103,5 +109,8 @@ impl<I: Iterator<Item = u8>> IterByteWriter<I> {
 
     pub fn take_iter(self) -> I {
         self.iter
+    }
+    pub fn iter_mut(&mut self) -> &mut I {
+        &mut self.iter
     }
 }
