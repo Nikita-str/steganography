@@ -1,32 +1,101 @@
+use std::borrow::Cow;
+
 use clap::{Parser, Subcommand};
 
 use steganography::prelude::*;
 use steganography::png::algo as algo;
 use steganography::png::prelude::*;
+use steganography::text::RepeatConstTypo;
 
-// TODO: text Cli
-// TODO: text file
 // TODO: text in code comment
+// TODO: .webp
 
 // TODO: chacha8rng for noise 
 
 #[derive(Parser, Debug)]
 pub struct Cli {
+    #[command(subcommand)]
+    pub cmd: CliCmd,
+}
+
+#[derive(Parser, Debug)]
+pub enum CliCmd {
+    #[command(name = "txt")]
+    TxtCmd(TxtArgs),
+
+    #[command(name = "pic")]
+    PicCmd (PicArgs),
+}
+
+
+#[derive(Parser, Debug)]
+pub struct TxtArgs {
+    #[arg(long = "init")]
+    /// Initial text. Can be text, or txt file (add prefix `file:` then).
+    init: Msg,
+    
+    #[command(subcommand)]
+    pub cmd: TxtCmd,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TxtCmd {
+    #[command(name = "txt-repeat-hide", aliases = &["txt-rh", "txt-r+"])]
+    RepeatHide {
+        #[arg(long = "msg")]
+        /// Message that will be hidden.
+        msg: Msg,
+        
+        #[arg(long = "mod")]
+        /// Where save hidden message.
+        modified: Option<String>,
+
+        #[arg(long = "freq")]
+        /// Frequency of a repeat typo.
+        bit_freq: usize,
+
+        #[arg(long = "typo-a", default_value_t = ' ')]
+        /// Typo for cases when we cannot just repeat.
+        typo_a: char,
+
+        #[arg(long = "typo-b", default_value_t = '.')]
+        /// Second typo for cases when we cannot just repeat.
+        typo_b: char,
+    },
+
+    #[command(name = "txt-repeat-reveal", aliases = &["txt-rr", "txt-r="])]
+    RepeatReveal {
+        #[arg(long = "mod")]
+        /// Modified text.
+        modified: Msg,
+
+        #[arg(long = "freq")]
+        /// Frequency of a repeat typo.
+        bit_freq: usize,
+        
+        #[command(flatten)]
+        save: SaveArg,
+    },
+}
+
+#[derive(Parser, Debug)]
+pub struct PicArgs {
     #[command(flatten)]
     pub info: Info,
 
     #[command(subcommand)]
-    pub cmd: CliCmd,
+    pub cmd: PicCmd,
 
     // TODO: reordering of pixels
 }
+
 #[derive(Debug, Subcommand)]
-pub enum CliCmd {
+pub enum PicCmd {
     #[command(name = "png-delta-hide", aliases = &["png-dh", "png-d+"])]
     /// Hide a message into `.png`s by using delta of initial & modified(will be created) pictures
     DeltaHide {
         #[arg(long)]
-        /// Message that is transmitted. 
+        /// Message that is transmitted (if it is a file, add preffix: `file:`). 
         /// It's better if the message encrypted before steganography.
         msg: Msg,
             
@@ -48,7 +117,7 @@ pub enum CliCmd {
     /// Hide a message into `.png`'s by using avg sum of initial images (modified will be created)
     AvgSumHide {
         #[arg(long)]
-        /// Message that is transmitted. 
+        /// Message that is transmitted (if it is a file, add preffix: `file:`). 
         /// It's better if the message encrypted before steganography.
         msg: Msg,
 
@@ -76,7 +145,7 @@ pub enum CliCmd {
     /// Hide a message into `.png`'s by using less significant bits of pixel channels in initial images (modified will be created)
     LessSignificantHide {
         #[arg(long)]
-        /// Message that is transmitted. 
+        /// Message that is transmitted (if it is a file, add preffix: `file:`). 
         /// It's better if the message encrypted before steganography.
         msg: Msg,
 
@@ -112,6 +181,11 @@ pub struct SaveArg {
     /// If message is not a text, but is a file, then it will be saved to this path. 
     /// Otherwise into default: `file.bin`
     save: Option<String>,
+}
+impl SaveArg {
+    pub fn clone_inner(&self) -> Option<String> {
+        self.save.clone()
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -152,14 +226,14 @@ impl Cli {
     }
 }
 
-impl TryFrom<Cli> for algo::DeltaHider {
+impl TryFrom<PicArgs> for algo::DeltaHider {
     type Error = steganography::Error;
 
-    fn try_from(cli: Cli) -> Result<Self> {
-        if let CliCmd::DeltaHide { msg, arg } = cli.cmd {
+    fn try_from(args: PicArgs) -> Result<Self> {
+        if let PicCmd::DeltaHide { msg, arg }  = args.cmd {
             let (msg, ty) = msg.into_pair()?;
-            let initial_img = Cli::check_init_img(cli.info.initial_img)?;
-            Cli::check_consist_len(&initial_img, &cli.info.modified_img)?;
+            let initial_img = Cli::check_init_img(args.info.initial_img)?;
+            Cli::check_consist_len(&initial_img, &args.info.modified_img)?;
 
             let bits = arg.bits_per_pixel_chan.max(1);
             if arg.bits_per_pixel_chan > MAX_BIT_PER_CHAN {
@@ -169,7 +243,7 @@ impl TryFrom<Cli> for algo::DeltaHider {
             Ok(Self {
                 msg,
                 initial_img,
-                modified_img: ImgPaths::new_any(cli.info.modified_img),
+                modified_img: ImgPaths::new_any(args.info.modified_img),
                 bits,
                 ty,
             })
@@ -179,37 +253,37 @@ impl TryFrom<Cli> for algo::DeltaHider {
     }
 }
 
-impl TryFrom<Cli> for algo::AvgSumHider {
+impl TryFrom<PicArgs> for algo::AvgSumHider {
     type Error = steganography::Error;
 
-    fn try_from(cli: Cli) -> Result<Self> {
-        if let CliCmd::AvgSumHide { msg, bits_per_chunk, chunk_size } = cli.cmd {
+    fn try_from(args: PicArgs) -> Result<Self> {
+        if let PicCmd::AvgSumHide { msg, bits_per_chunk, chunk_size } = args.cmd {
             let (msg, ty) = msg.into_pair()?;
-            let initial_img = Cli::check_init_img(cli.info.initial_img)?;
-            Cli::check_consist_len(&initial_img, &cli.info.modified_img)?;
+            let initial_img = Cli::check_init_img(args.info.initial_img)?;
+            Cli::check_consist_len(&initial_img, &args.info.modified_img)?;
 
             Ok(Self {
                 msg,
                 initial_img,
-                modified_img: ImgPaths::new_any(cli.info.modified_img),
+                modified_img: ImgPaths::new_any(args.info.modified_img),
                 bits_per_chunk,
                 chunk_size,
                 ty,
             })
         } else {
-            Err(Error::Other("Cannot convert into args: command is not a delta hide.".into()))
+            Err(Error::Other("Cannot convert into args: command is not an avg sum hide.".into()))
         }
     }
 }
 
-impl TryFrom<Cli> for algo::DeltaRevealer {
+impl TryFrom<PicArgs> for algo::DeltaRevealer {
     type Error = steganography::Error;
 
-    fn try_from(cli: Cli) -> Result<Self> {
-        if let CliCmd::DeltaReveal { save, arg } = cli.cmd {
-            let initial_img = Cli::check_init_img(cli.info.initial_img)?;
-            Cli::check_consist_len(&initial_img, &cli.info.modified_img)?;
-            let modified_img = Cli::check_mod_img(cli.info.modified_img)?;
+    fn try_from(args: PicArgs) -> Result<Self> {
+        if let PicCmd::DeltaReveal { save, arg } = args.cmd {
+            let initial_img = Cli::check_init_img(args.info.initial_img)?;
+            Cli::check_consist_len(&initial_img, &args.info.modified_img)?;
+            let modified_img = Cli::check_mod_img(args.info.modified_img)?;
             
             Ok(Self {
                 initial_img,
@@ -218,64 +292,98 @@ impl TryFrom<Cli> for algo::DeltaRevealer {
                 bits: arg.bits_per_pixel_chan,
             })
         } else {
-            Err(Error::Other("Cannot convert into args: command is not a delta hide.".into()))
+            Err(Error::Other("Cannot convert into args: command is not a delta reveal.".into()))
         }
     }
 }
 
-impl TryFrom<Cli> for algo::AvgSumRevealer {
+impl TryFrom<PicArgs> for algo::AvgSumRevealer {
     type Error = steganography::Error;
 
-    fn try_from(cli: Cli) -> Result<Self> {
-        if let CliCmd::AvgSumReveal { save } = cli.cmd {
-            let modified_img = Cli::check_mod_img(cli.info.modified_img)?;
+    fn try_from(args: PicArgs) -> Result<Self> {
+        if let PicCmd::AvgSumReveal { save } = args.cmd {
+            let modified_img = Cli::check_mod_img(args.info.modified_img)?;
 
             Ok(Self {
                 modified_img,
                 save_path: save.save,
             })
         } else {
-            Err(Error::Other("Cannot convert into args: command is not a delta hide.".into()))
+            Err(Error::Other("Cannot convert into args: command is not an avg sum reveal.".into()))
         }
     }
 }
 
-impl TryFrom<Cli> for algo::LessSignHider<Vec<u8>> {
+impl TryFrom<PicArgs> for algo::LessSignHider<Vec<u8>> {
     type Error = steganography::Error;
 
-    fn try_from(cli: Cli) -> Result<Self> {
-        if let CliCmd::LessSignificantHide { msg, bits, gray } = cli.cmd {
+    fn try_from(args: PicArgs) -> Result<Self> {
+        if let PicCmd::LessSignificantHide { msg, bits, gray } = args.cmd {
             let (msg, ty) = msg.into_pair()?;
-            let initial_img = Cli::check_init_img(cli.info.initial_img)?;
-            Cli::check_consist_len(&initial_img, &cli.info.modified_img)?;
+            let initial_img = Cli::check_init_img(args.info.initial_img)?;
+            Cli::check_consist_len(&initial_img, &args.info.modified_img)?;
 
             Ok(Self {
                 msg,
                 ty,
                 initial_img,
-                modified_img: ImgPaths::new_any(cli.info.modified_img),
+                modified_img: ImgPaths::new_any(args.info.modified_img),
                 bits,
                 gray,
             })
         } else {
-            Err(Error::Other("Cannot convert into args: command is not a delta hide.".into()))
+            Err(Error::Other("Cannot convert into args: command is not a less significant hide.".into()))
         }
     }
 }
 
-impl TryFrom<Cli> for algo::LessSignRevealer {
+impl TryFrom<PicArgs> for algo::LessSignRevealer {
     type Error = steganography::Error;
 
-    fn try_from(cli: Cli) -> Result<Self> {
-        if let CliCmd::LessSignificantReveal { save } = cli.cmd {
-            let modified_img = Cli::check_mod_img(cli.info.modified_img)?;
+    fn try_from(args: PicArgs) -> Result<Self> {
+        if let PicCmd::LessSignificantReveal { save } = args.cmd {
+            let modified_img = Cli::check_mod_img(args.info.modified_img)?;
 
             Ok(Self {
                 modified_img,
                 save_path: save.save,
             })
         } else {
-            Err(Error::Other("Cannot convert into args: command is not a delta hide.".into()))
+            Err(Error::Other("Cannot convert into args: command is not a less significant reveal.".into()))
+        }
+    }
+}
+
+impl TryFrom<TxtArgs> for steganography::text::RepeatCharHider<'static, RepeatConstTypo> {
+    type Error = steganography::Error;
+
+    fn try_from(args: TxtArgs) -> Result<Self> {
+        if let TxtCmd::RepeatHide { msg, bit_freq, typo_a, typo_b, modified: _ } = args.cmd {
+            Ok(Self {
+                initial: Cow::from(args.init.into_string()?),
+                bit_freq,
+                msg: Cow::Owned(msg.into_bytes()?),
+                typo: RepeatConstTypo::new(typo_a, typo_b),
+            })
+        } else {
+            Err(Error::Other("Cannot convert into args: command is not a txt repeat hide.".into()))
+        }
+    }
+}
+
+impl TryFrom<TxtArgs> for steganography::text::RepeatCharRevealer<'static> {
+    type Error = steganography::Error;
+
+    fn try_from(args: TxtArgs) -> Result<Self> {
+        if let TxtCmd::RepeatReveal { modified, bit_freq, .. } = args.cmd {
+            Ok(Self {
+                initial: Cow::from(args.init.into_string()?),
+                modified: Cow::from(modified.into_string()?),
+                bit_freq,
+                with_header: false,
+            })
+        } else {
+            Err(Error::Other("Cannot convert into args: command is not a txt repeat reveal.".into()))
         }
     }
 }

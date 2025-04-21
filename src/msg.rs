@@ -26,6 +26,19 @@ impl Msg {
         }
     }
     
+    pub fn into_string(self) -> Result<String> {
+        match self {
+            Msg::Txt(s) => Ok(s),
+            Msg::File(path) => {
+                let file_bytes = std::fs::read(path)?;
+                match String::from_utf8(file_bytes) {
+                    Ok(s) => Ok(s),
+                    Err(err) => Err(Error::InvalidMsg(Box::new(err))),
+                }
+            }
+        }
+    }
+
     pub fn into_pair(self) -> Result<(Vec<u8>, MsgType)> {
         let ty = self.ty();
         self.into_bytes().map(|x|(x, ty))

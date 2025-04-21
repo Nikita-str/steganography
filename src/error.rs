@@ -24,6 +24,8 @@ pub enum Error {
     ImageInconsistentSize(u32, u32, u32, u32),
     #[error("Invalid revealed message: {0}")]
     InvalidMsg(Box<FromUtf8Error>),
+    #[error("File is not a txt: {0}")]
+    InvalidTxtFile(Box<FromUtf8Error>),
     #[error("I/O error: {0}")]
     ErrorIO(std::io::Error),
     #[error("Save probelm.\nMost likely the prefix `file:`.\nFile path: \"{1}\".\nThe problem: {0}")]

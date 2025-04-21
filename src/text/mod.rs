@@ -35,19 +35,19 @@ impl RepeatTypo for RepeatConstTypo {
     }
 }
 
-pub struct RepeatCharHideArg<'s, Typo> {
+pub struct RepeatCharHider<'s, Typo> {
     pub initial: Cow<'s, str>,
     /// should be >= 5 
     pub bit_freq: usize,
-    pub msg: &'s [u8],
+    pub msg: Cow<'s, [u8]>,
     pub typo: Typo,
 }
-impl<'s, Typo: RepeatTypo> RepeatCharHideArg<'s, Typo> {
+impl<'s, Typo: RepeatTypo> RepeatCharHider<'s, Typo> {
     pub fn new_ref(initial: &'s str, msg: &'s [u8], bit_freq: usize, typo: Typo) -> Self {
         Self {
             initial: Cow::Borrowed(initial),
             bit_freq,
-            msg,
+            msg: Cow::Borrowed(msg),
             typo,
         }
     }
@@ -55,7 +55,7 @@ impl<'s, Typo: RepeatTypo> RepeatCharHideArg<'s, Typo> {
         Self {
             initial: Cow::Owned(initial),
             bit_freq,
-            msg,
+            msg: Cow::Borrowed(msg),
             typo,
         }
     }
@@ -150,21 +150,20 @@ impl<'s, Typo: RepeatTypo> RepeatCharHideArg<'s, Typo> {
     }
 }
 
-pub struct RepeatCharRevealArg<'s> {
+pub struct RepeatCharRevealer<'s> {
     pub initial: Cow<'s, str>,
     pub modified: Cow<'s, str>,
     /// should be >= 5 
     pub bit_freq: usize,
     pub with_header: bool, // TODO: if true => header contains bit_freq & ?len?
 }
-impl<'s> RepeatCharRevealArg<'s> {
+impl<'s> RepeatCharRevealer<'s> {
     pub fn reveal(self) -> Result<Vec<u8>> {
         let mut ret = Vec::new();
         let mut reader = ConstBytesReader::new(1);
 
         let mut init_iter = self.initial.chars();
         let mut mod_iter = self.modified.chars();
-
 
         'one_bit_chunk: loop {
             macro_rules! take_next_and_handle_err {
@@ -270,11 +269,11 @@ mod tests {
 
         for (init, msg, bit_freq) in init_msg_pairs {        
             let typo = RepeatConstTypo::new('.', ' ');
-            let hider = RepeatCharHideArg::new_ref(&init, msg.as_bytes(), bit_freq, typo);
+            let hider = RepeatCharHider::new_ref(&init, msg.as_bytes(), bit_freq, typo);
             
             let output = hider.hide()?;
             
-            let revealer = RepeatCharRevealArg {
+            let revealer = RepeatCharRevealer {
                 initial: Cow::Borrowed(&init),
                 modified: Cow::Borrowed(&output),
                 bit_freq: bit_freq,
