@@ -114,7 +114,7 @@ impl<I: Iterator<Item = u8>> IterByteWriter<I> {
         &mut self.iter
     }
 }
-impl<I: Iterator<Item = u8>> crate::png::algo_args::HiderWriter for IterByteWriter<I> {
+impl<I: Iterator<Item = u8>> HiderWriter for IterByteWriter<I> {
     fn is_done(&self) -> bool {
         self.is_done()
     }
@@ -123,3 +123,9 @@ impl<I: Iterator<Item = u8>> crate::png::algo_args::HiderWriter for IterByteWrit
         self.iter_mut().fold(0, |a, _| a + 1)
     }
 }
+
+pub(in crate) trait HiderWriter {
+    fn is_done(&self) -> bool;
+    fn bytes_left(&mut self) -> usize;
+}
+

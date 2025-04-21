@@ -1,4 +1,4 @@
-use crate::writer::{ConstBytesWriter, IterByteWriter};
+use crate::writer::{ConstBytesWriter, HiderWriter, IterByteWriter};
 use crate::prelude::*;
 use crate::PSEUDO_RAND_INDEXES;
 
@@ -58,6 +58,7 @@ impl<Iter: Iterator<Item = u8>> DeltaByteMsgWriter<Iter> {
         })
     }
 
+    #[allow(unused)]
     #[inline(always)]
     pub fn bytes_left(self) -> usize {
         self.msg_iter.count()
@@ -137,7 +138,7 @@ impl<Iter: Iterator<Item = u8>> DeltaByteMsgWriter<Iter> {
         }
     }
 }
-impl<Iter: Iterator<Item = u8>> super::algo_args::HiderWriter for DeltaByteMsgWriter<Iter> {
+impl<Iter: Iterator<Item = u8>> HiderWriter for DeltaByteMsgWriter<Iter> {
     fn is_done(&self) -> bool {
         self.is_done()
     }
@@ -280,7 +281,7 @@ impl<I: Iterator<Item = u8>> AvgSumHideBlockWriter<I> {
         flags
     }
 }
-impl<Iter: Iterator<Item = u8>> super::algo_args::HiderWriter for AvgSumHideBlockWriter<Iter> {
+impl<Iter: Iterator<Item = u8>> HiderWriter for AvgSumHideBlockWriter<Iter> {
     fn is_done(&self) -> bool {
         self.is_done()
     }

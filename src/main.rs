@@ -2,7 +2,7 @@ mod cli;
 use clap::Parser;
 use cli::{Cli, CliCmd};
 use steganography::prelude::*;
-use steganography::png::algo_args as args;
+use steganography::png::algo as algo;
 
 fn main() {
     let start = std::time::Instant::now();
@@ -19,36 +19,36 @@ fn main_inner() -> Result<()> {
 
     match &cli.cmd {
         CliCmd::DeltaHide { .. } => {
-            let args: args::DeltaHideArgs = cli.try_into()?;
-            args.hide()?;
+            let algo: algo::DeltaHider = cli.try_into()?;
+            algo.hide()?;
         }
 
         CliCmd::DeltaReveal { .. } => {
-            let args: args::DeltaRevealArgs = cli.try_into()?;
-            let (msg, ty) = args.reveal()?;
-            ty.do_action(msg, args.save_path)?
+            let algo: algo::DeltaRevealer = cli.try_into()?;
+            let (msg, ty) = algo.reveal()?;
+            ty.do_action(msg, algo.save_path)?
         }
         
         CliCmd::AvgSumHide { .. } => {
-            let args: args::AvgSumHideArgs = cli.try_into()?;
-            args.hide()?;
+            let algo: algo::AvgSumHider = cli.try_into()?;
+            algo.hide()?;
         }
         
         CliCmd::AvgSumReveal { .. } => {
-            let args: args::AvgSumRevealArgs = cli.try_into()?;
-            let (msg, ty) = args.reveal()?;
-            ty.do_action(msg, args.save_path)?
+            let algo: algo::AvgSumRevealer = cli.try_into()?;
+            let (msg, ty) = algo.reveal()?;
+            ty.do_action(msg, algo.save_path)?
         }
         
         CliCmd::LessSignificantHide { .. } => {
-            let args: args::RemainderHider<Vec<u8>> = cli.try_into()?;
-            args.transmute_msg().hide()?;
+            let algo: algo::LessSignHider<Vec<u8>> = cli.try_into()?;
+            algo.transmute_msg().hide()?;
         }
         
         CliCmd::LessSignificantReveal { .. } => {
-            let args: args::RemainderRevealer = cli.try_into()?;
-            let (msg, ty) = args.reveal()?;
-            ty.do_action(msg, args.save_path)?
+            let algo: algo::LessSignRevealer = cli.try_into()?;
+            let (msg, ty) = algo.reveal()?;
+            ty.do_action(msg, algo.save_path)?
         }
     }
     Ok(())

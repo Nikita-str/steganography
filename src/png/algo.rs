@@ -1,11 +1,19 @@
 use image::{Rgb, RgbImage};
 use rand::RngCore;
 
-use crate::{prelude::*, PSEUDO_RAND_INDEXES};
+use crate::prelude::*;
+use crate::PSEUDO_RAND_INDEXES;
+
+use crate::writer::{IterByteWriter, HiderWriter};
+use crate::reader::{ConstBufReader, ConstBytesReader};
+
+use crate::png::reader::*;
+use crate::png::writer::*;
 use crate::png::prelude::*;
 use crate::png::writer::TopBottomChunks;
-use crate::reader::{ConstBufReader, ConstBytesReader};
-use crate::writer::IterByteWriter;
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// [+] General help objects
 
 macro_rules! paths_pair {
     ($x: ident) => {
@@ -20,7 +28,33 @@ struct PathsPair<'a> {
     modified_img: &'a ImgPaths,
 }
 
-pub struct DeltaHideArgs {
+fn hider_loop<'a, H, F>(writer: &mut H, paths: PathsPair<'a>, mut img_f: F) -> Result<()>
+where
+    H: HiderWriter,
+    F: FnMut(&mut H, &mut RgbImage) -> Result<()>
+{
+    for (index, path) in paths.initial_img.iter().enumerate() {
+        let mut img = Img::open_img(path);
+        img_f(writer, &mut img.img)?;
+        img.save_img(paths.modified_img, index)?;
+        if writer.is_done() { break }
+    }
+
+    if !writer.is_done() {
+        return Err(Error::NotEnoughSizeOfInit(writer.bytes_left()));
+    }
+    Ok(())
+}
+// [-] General help objects
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// [+] Hider(s)
+
+// ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━
+// [=][+] Hider: Delta
+
+pub struct DeltaHider {
     pub msg: Vec<u8>,
 
     pub initial_img: Vec<String>,
@@ -32,7 +66,7 @@ pub struct DeltaHideArgs {
     pub ty: MsgType,
 }
 
-impl DeltaHideArgs {
+impl DeltaHider {
     pub fn hide(self) -> Result<()> {
         let paths = paths_pair!(self);
         let msg_len = self.msg.len();
@@ -48,7 +82,12 @@ impl DeltaHideArgs {
     }
 }
 
-pub struct AvgSumHideArgs {
+// [=][-] Hider: Delta
+// ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━
+// ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━
+// [=][+] Hider: Avg Sum
+
+pub struct AvgSumHider {
     pub msg: Vec<u8>,
     pub ty: MsgType,
 
@@ -63,7 +102,8 @@ pub struct AvgSumHideArgs {
     /// Max value is 64.
     pub chunk_size: u8,
 }
-impl AvgSumHideArgs {
+
+impl AvgSumHider {
     const HEADER_CHUNK_SIZE: u8 = 8;
     const HEADER_BITS_PER_CHUNK: u8 = 4;
 
@@ -116,157 +156,12 @@ impl AvgSumHideArgs {
     }
 }
 
+// [=][-] Hider: Avg Sum
+// ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━
+// ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━
+// [=][+] Hider: Less Sign
 
-pub struct DeltaRevealArgs {
-    pub initial_img: Vec<String>,
-    pub modified_img: Vec<String>,
-    pub save_path: Option<String>,
-    pub bits: u8,
-}
-impl DeltaRevealArgs {
-    pub fn reveal(&self) -> Result<(Vec<u8>, MsgType)> {
-        let mut msg_reader = DeltaByteMsgReader::new(self.bits);
-        
-        // TODO: it can be paralleled (by images & by chunks of pixels in an image)
-        for (path_a, path_b) in self.initial_img.iter().zip(self.modified_img.iter()) {
-            let img_a = Img::open_img(path_a);
-            let img_b = Img::open_img(path_b);
-            if img_a.width() != img_b.width() || img_a.height() != img_b.height() {
-                return Err(Error::ImageInconsistentSize(
-                    img_a.width(),
-                    img_a.height(),
-                    img_b.width(), 
-                    img_b.height()
-                ))
-            }
-
-            let chan_iter_a = img_a.img.pixels().flat_map(|x|&x.0).cloned();
-            let chan_iter_b = img_b.img.pixels().flat_map(|x|&x.0).cloned();
-            let chan_pair_iter = chan_iter_a.zip(chan_iter_b);
-            msg_reader.read(chan_pair_iter)?;
-
-            if msg_reader.is_finished() { break }
-        }
-
-        let Some(ty) = msg_reader.ty() else {
-            return Err(Error::UnreadedHeader);
-        };
-        let Some(msg) = msg_reader.take_msg() else {
-            return Err(Error::UnreadedHeader);
-        };
-        Ok((msg, ty))
-    }
-}
-
-pub struct AvgSumRevealArgs {
-    pub modified_img: Vec<String>,
-    pub save_path: Option<String>,
-}
-impl AvgSumRevealArgs {
-    const HEADER_SIZE: usize = 7;
-
-    fn msg_reader_ctor(header: &Vec<u8>) -> Result<(Option<AvgSumChunkReader>, MsgType)> {
-        let ty = match MsgType::try_from_u8(header[0]) {
-            Some(ty_x) => ty_x,
-            _ => return Err(Error::InvalidMsgTypeByte(header[0])),
-        };
-
-        let bits_per_chunk = header[1];
-        let chunk_size = header[2];
-        
-        let len_bytes: [u8; 4] = header[Self::HEADER_SIZE - 4..Self::HEADER_SIZE].try_into().unwrap();
-        let msg_len = u32::from_le_bytes(len_bytes) as usize;
-
-        let reader = AvgSumChunkReader::new(msg_len, chunk_size, bits_per_chunk);
-        Ok((Some(reader), ty))
-    }
-
-    pub fn reveal(&self) -> Result<(Vec<u8>, MsgType)> {
-        let chunk_size = AvgSumHideArgs::HEADER_CHUNK_SIZE;
-        let bits_per_chunk = AvgSumHideArgs::HEADER_BITS_PER_CHUNK;
-        let mut header_reader = AvgSumChunkReader::new(Self::HEADER_SIZE, chunk_size, bits_per_chunk);
-        let mut ty = MsgType::Reserved;
-        
-        let mut msg_reader: Option<AvgSumChunkReader> = None;
-
-        // TODO: it can be paralleled (by images & by chunks of pixels in an image)
-        'modi: for path in &self.modified_img {
-            let img = Img::open_img(path);
-            let mut chan_iter = img.img.pixels().flat_map(|x|&x.0).cloned();
-
-            if header_reader.read_while_can(&mut chan_iter) {
-                continue 'modi
-            } else if msg_reader.is_none() {
-                assert_eq!(header_reader.buf.len(), Self::HEADER_SIZE);
-                let header = &header_reader.buf;
-                (msg_reader, ty) = Self::msg_reader_ctor(header)?;
-            }
-            
-            if let Some(msg_reader) = &mut msg_reader { 
-                if msg_reader.read_while_can(&mut chan_iter) {
-                    continue 'modi
-                }
-
-                break 'modi
-            }
-        }
-
-        if ty.is_reserved() {
-            return Err(Error::UnreadedHeader);
-        }
-        let Some(msg_reader) = msg_reader else {
-            return Err(Error::UnreadedHeader);
-        };
-        if msg_reader.buf.len() != msg_reader.expected_size {
-            return Err(Error::UnfullResult(msg_reader.expected_size - msg_reader.buf.len()));
-        }
-        Ok((msg_reader.buf, ty))
-    }
-}
-
-struct AvgSumChunkReader {
-    reader: ConstBytesReader,
-    buf: Vec<u8>,
-    expected_size: usize,
-    chunk_size: u8,
-    rem: u16,
-}
-impl AvgSumChunkReader {
-    fn new(expected_size: usize, chunk_size: u8, bits_per_chunk: u8) -> Self {
-        let rem = 1u16 << bits_per_chunk;
-        let reader = ConstBytesReader::new(bits_per_chunk);
-        let buf = Vec::with_capacity(expected_size);
-        Self {
-            reader,
-            buf,
-            expected_size,
-            chunk_size,
-            rem,
-        }
-    }
-    /// # Result
-    /// is iter ended
-    fn read_while_can(&mut self, mut chan_iter: impl Iterator<Item = u8>) -> bool {
-        while self.buf.len() != self.expected_size {
-            let mut sum = 0;
-            for _ in 0..self.chunk_size {
-                if let Some(byte) = chan_iter.next() {
-                    sum += byte as u16;
-                } else {
-                    return true
-                }
-            }
-
-            let part_of_byte = sum % self.rem;
-            if let Some(byte) = self.reader.try_take_next_le_byte(part_of_byte as u8) {
-                self.buf.push(byte)
-            }
-        }
-        false
-    }
-}
-
-pub struct RemainderHider<ByteIter> {
+pub struct LessSignHider<ByteIter> {
     pub msg: ByteIter,
     pub ty: MsgType,
 
@@ -280,9 +175,10 @@ pub struct RemainderHider<ByteIter> {
     /// Gray output mode
     pub gray: bool,
 }
-impl<ByteIter: IntoIterator<Item = u8>> RemainderHider<ByteIter> {
-    pub fn transmute_msg(self) -> RemainderHider<ByteIter::IntoIter> {
-        RemainderHider {
+
+impl<ByteIter: IntoIterator<Item = u8>> LessSignHider<ByteIter> {
+    pub fn transmute_msg(self) -> LessSignHider<ByteIter::IntoIter> {
+        LessSignHider {
             msg: self.msg.into_iter(),
             ty: self.ty,
             initial_img: self.initial_img,
@@ -292,11 +188,11 @@ impl<ByteIter: IntoIterator<Item = u8>> RemainderHider<ByteIter> {
         }
     }
 }
-impl<Any> RemainderHider<Any> {
+impl<Any> LessSignHider<Any> {
     const HEADER_SIZE: usize = 4 + 4 + 2;
 }
-impl<ByteIter: ExactSizeIterator<Item = u8>> RemainderHider<ByteIter> {
-    fn header_writer(&self) -> Result<RemainderHiderWriter<impl Iterator<Item = u8> + 'static>> {        
+impl<ByteIter: ExactSizeIterator<Item = u8>> LessSignHider<ByteIter> {
+    fn header_writer(&self) -> Result<LessSignHiderWriter<impl Iterator<Item = u8> + 'static>> {        
         let mut header = vec![];
         
         let mut rng = rand::rng();
@@ -317,13 +213,13 @@ impl<ByteIter: ExactSizeIterator<Item = u8>> RemainderHider<ByteIter> {
         header.extend([self.ty as u8, bits_and_gray]);
 
         assert_eq!(header.len(), Self::HEADER_SIZE);
-        Ok(RemainderHiderWriter::new(header.into_iter(), 1))
+        Ok(LessSignHiderWriter::new(header.into_iter(), 1))
     }
 
     pub fn hide(self) -> Result<()> {
         let paths = paths_pair!(self);
         let mut header_writer = self.header_writer()?;
-        let mut msg_writer = RemainderHiderWriter::new(self.msg, self.bits);
+        let mut msg_writer = LessSignHiderWriter::new(self.msg, self.bits);
 
         if !self.gray {
             hider_loop(&mut msg_writer, paths, |msg_writer, img|{
@@ -344,11 +240,12 @@ impl<ByteIter: ExactSizeIterator<Item = u8>> RemainderHider<ByteIter> {
         }
     }
 }
-struct RemainderHiderWriter<I> {
+
+struct LessSignHiderWriter<I> {
     iter_bw: IterByteWriter<I>,
     mask: u8,
 }
-impl<I: Iterator<Item = u8>> RemainderHiderWriter<I> {
+impl<I: Iterator<Item = u8>> LessSignHiderWriter<I> {
     pub fn new(iter: I, bits: u8) -> Self {
         Self {
             iter_bw: IterByteWriter::new(iter, bits),
@@ -433,7 +330,7 @@ impl<I: Iterator<Item = u8>> RemainderHiderWriter<I> {
         }
     }
 }
-impl<I: Iterator<Item = u8>> HiderWriter for RemainderHiderWriter<I> {
+impl<I: Iterator<Item = u8>> HiderWriter for LessSignHiderWriter<I> {
     fn is_done(&self) -> bool {
         self.iter_bw.is_done()
     }
@@ -442,11 +339,182 @@ impl<I: Iterator<Item = u8>> HiderWriter for RemainderHiderWriter<I> {
     }
 }
 
-pub struct RemainderRevealer {
+// [=][-] Hider: Less Sign
+// ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━
+
+// [-] Hider(s)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// [+] Revealer(s)
+
+// ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━
+// [=][+] Revealer: Delta
+
+pub struct DeltaRevealer {
+    pub initial_img: Vec<String>,
+    pub modified_img: Vec<String>,
+    pub save_path: Option<String>,
+    pub bits: u8,
+}
+impl DeltaRevealer {
+    pub fn reveal(&self) -> Result<(Vec<u8>, MsgType)> {
+        let mut msg_reader = DeltaByteMsgReader::new(self.bits);
+        
+        // TODO: it can be paralleled (by images & by chunks of pixels in an image)
+        for (path_a, path_b) in self.initial_img.iter().zip(self.modified_img.iter()) {
+            let img_a = Img::open_img(path_a);
+            let img_b = Img::open_img(path_b);
+            if img_a.width() != img_b.width() || img_a.height() != img_b.height() {
+                return Err(Error::ImageInconsistentSize(
+                    img_a.width(),
+                    img_a.height(),
+                    img_b.width(), 
+                    img_b.height()
+                ))
+            }
+
+            let chan_iter_a = img_a.img.pixels().flat_map(|x|&x.0).cloned();
+            let chan_iter_b = img_b.img.pixels().flat_map(|x|&x.0).cloned();
+            let chan_pair_iter = chan_iter_a.zip(chan_iter_b);
+            msg_reader.read(chan_pair_iter)?;
+
+            if msg_reader.is_finished() { break }
+        }
+
+        let Some(ty) = msg_reader.ty() else {
+            return Err(Error::UnreadedHeader);
+        };
+        let Some(msg) = msg_reader.take_msg() else {
+            return Err(Error::UnreadedHeader);
+        };
+        Ok((msg, ty))
+    }
+}
+
+// [=][-] Revealer: Delta
+// ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━
+// ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━
+// [=][+] Revealer: Avg Sum
+
+pub struct AvgSumRevealer {
     pub modified_img: Vec<String>,
     pub save_path: Option<String>,
 }
-impl RemainderRevealer {
+impl AvgSumRevealer {
+    const HEADER_SIZE: usize = 7;
+
+    fn msg_reader_ctor(header: &Vec<u8>) -> Result<(Option<AvgSumChunkReader>, MsgType)> {
+        let ty = match MsgType::try_from_u8(header[0]) {
+            Some(ty_x) => ty_x,
+            _ => return Err(Error::InvalidMsgTypeByte(header[0])),
+        };
+
+        let bits_per_chunk = header[1];
+        let chunk_size = header[2];
+        
+        let len_bytes: [u8; 4] = header[Self::HEADER_SIZE - 4..Self::HEADER_SIZE].try_into().unwrap();
+        let msg_len = u32::from_le_bytes(len_bytes) as usize;
+
+        let reader = AvgSumChunkReader::new(msg_len, chunk_size, bits_per_chunk);
+        Ok((Some(reader), ty))
+    }
+
+    pub fn reveal(&self) -> Result<(Vec<u8>, MsgType)> {
+        let chunk_size = AvgSumHider::HEADER_CHUNK_SIZE;
+        let bits_per_chunk = AvgSumHider::HEADER_BITS_PER_CHUNK;
+        let mut header_reader = AvgSumChunkReader::new(Self::HEADER_SIZE, chunk_size, bits_per_chunk);
+        let mut ty = MsgType::Reserved;
+        
+        let mut msg_reader: Option<AvgSumChunkReader> = None;
+
+        // TODO: it can be paralleled (by images & by chunks of pixels in an image)
+        'modi: for path in &self.modified_img {
+            let img = Img::open_img(path);
+            let mut chan_iter = img.img.pixels().flat_map(|x|&x.0).cloned();
+
+            if header_reader.read_while_can(&mut chan_iter) {
+                continue 'modi
+            } else if msg_reader.is_none() {
+                assert_eq!(header_reader.buf.len(), Self::HEADER_SIZE);
+                let header = &header_reader.buf;
+                (msg_reader, ty) = Self::msg_reader_ctor(header)?;
+            }
+            
+            if let Some(msg_reader) = &mut msg_reader { 
+                if msg_reader.read_while_can(&mut chan_iter) {
+                    continue 'modi
+                }
+
+                break 'modi
+            }
+        }
+
+        if ty.is_reserved() {
+            return Err(Error::UnreadedHeader);
+        }
+        let Some(msg_reader) = msg_reader else {
+            return Err(Error::UnreadedHeader);
+        };
+        if msg_reader.buf.len() != msg_reader.expected_size {
+            return Err(Error::UnfullResult(msg_reader.expected_size - msg_reader.buf.len()));
+        }
+        Ok((msg_reader.buf, ty))
+    }
+}
+
+struct AvgSumChunkReader {
+    reader: ConstBytesReader,
+    buf: Vec<u8>,
+    expected_size: usize,
+    chunk_size: u8,
+    rem: u16,
+}
+impl AvgSumChunkReader {
+    fn new(expected_size: usize, chunk_size: u8, bits_per_chunk: u8) -> Self {
+        let rem = 1u16 << bits_per_chunk;
+        let reader = ConstBytesReader::new(bits_per_chunk);
+        let buf = Vec::with_capacity(expected_size);
+        Self {
+            reader,
+            buf,
+            expected_size,
+            chunk_size,
+            rem,
+        }
+    }
+    /// # Result
+    /// is iter ended
+    fn read_while_can(&mut self, mut chan_iter: impl Iterator<Item = u8>) -> bool {
+        while self.buf.len() != self.expected_size {
+            let mut sum = 0;
+            for _ in 0..self.chunk_size {
+                if let Some(byte) = chan_iter.next() {
+                    sum += byte as u16;
+                } else {
+                    return true
+                }
+            }
+
+            let part_of_byte = sum % self.rem;
+            if let Some(byte) = self.reader.try_take_next_le_byte(part_of_byte as u8) {
+                self.buf.push(byte)
+            }
+        }
+        false
+    }
+}
+
+// [=][-] Revealer: Avg Sum
+// ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━
+// ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━
+// [=][+] Revealer: Less Sign
+
+pub struct LessSignRevealer {
+    pub modified_img: Vec<String>,
+    pub save_path: Option<String>,
+}
+impl LessSignRevealer {
     fn is_gray_calc(first_pixel: &Rgb<u8>) -> Result<bool> {
         let is_gray = (first_pixel.0[0] & 1) == 0;
         if is_gray {
@@ -483,7 +551,7 @@ impl RemainderRevealer {
 
     pub fn reveal(&self) -> Result<(Vec<u8>, MsgType)> {
         let mut gray: Option<bool> = None;
-        let mut header_reader = ConstBufReader::new(RemainderHider::<()>::HEADER_SIZE, 1);
+        let mut header_reader = ConstBufReader::new(LessSignHider::<()>::HEADER_SIZE, 1);
         let mut msg_reader = None;
         let mut ty = MsgType::Reserved;
 
@@ -545,25 +613,8 @@ impl RemainderRevealer {
     }
 }
 
-pub(in crate) trait HiderWriter {
-    fn is_done(&self) -> bool;
-    fn bytes_left(&mut self) -> usize;
-}
+// [=][-] Revealer: Less Sign
+// ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━
 
-fn hider_loop<'a, H, F>(writer: &mut H, paths: PathsPair<'a>, mut img_f: F) -> Result<()>
-where
-    H: HiderWriter,
-    F: FnMut(&mut H, &mut RgbImage) -> Result<()>
-{
-    for (index, path) in paths.initial_img.iter().enumerate() {
-        let mut img = Img::open_img(path);
-        img_f(writer, &mut img.img)?;
-        img.save_img(paths.modified_img, index)?;
-        if writer.is_done() { break }
-    }
-
-    if !writer.is_done() {
-        return Err(Error::NotEnoughSizeOfInit(writer.bytes_left()));
-    }
-    Ok(())
-}
+// [-] Revealer(s)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

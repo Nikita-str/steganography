@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 use steganography::prelude::*;
-use steganography::png::algo_args as args;
+use steganography::png::algo as algo;
 use steganography::png::prelude::*;
 
 // TODO: text Cli
@@ -152,7 +152,7 @@ impl Cli {
     }
 }
 
-impl TryFrom<Cli> for args::DeltaHideArgs {
+impl TryFrom<Cli> for algo::DeltaHider {
     type Error = steganography::Error;
 
     fn try_from(cli: Cli) -> Result<Self> {
@@ -179,7 +179,7 @@ impl TryFrom<Cli> for args::DeltaHideArgs {
     }
 }
 
-impl TryFrom<Cli> for args::AvgSumHideArgs {
+impl TryFrom<Cli> for algo::AvgSumHider {
     type Error = steganography::Error;
 
     fn try_from(cli: Cli) -> Result<Self> {
@@ -202,7 +202,7 @@ impl TryFrom<Cli> for args::AvgSumHideArgs {
     }
 }
 
-impl TryFrom<Cli> for args::DeltaRevealArgs {
+impl TryFrom<Cli> for algo::DeltaRevealer {
     type Error = steganography::Error;
 
     fn try_from(cli: Cli) -> Result<Self> {
@@ -223,7 +223,7 @@ impl TryFrom<Cli> for args::DeltaRevealArgs {
     }
 }
 
-impl TryFrom<Cli> for args::AvgSumRevealArgs {
+impl TryFrom<Cli> for algo::AvgSumRevealer {
     type Error = steganography::Error;
 
     fn try_from(cli: Cli) -> Result<Self> {
@@ -240,7 +240,7 @@ impl TryFrom<Cli> for args::AvgSumRevealArgs {
     }
 }
 
-impl TryFrom<Cli> for args::RemainderHider<Vec<u8>> {
+impl TryFrom<Cli> for algo::LessSignHider<Vec<u8>> {
     type Error = steganography::Error;
 
     fn try_from(cli: Cli) -> Result<Self> {
@@ -263,7 +263,7 @@ impl TryFrom<Cli> for args::RemainderHider<Vec<u8>> {
     }
 }
 
-impl TryFrom<Cli> for args::RemainderRevealer {
+impl TryFrom<Cli> for algo::LessSignRevealer {
     type Error = steganography::Error;
 
     fn try_from(cli: Cli) -> Result<Self> {
