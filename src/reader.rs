@@ -71,3 +71,67 @@ impl ConstBytesReader {
         self.br = SingleByteReader::new();
     }
 }
+
+/// Reads bits(parts of bytes) until it fills the buffer. 
+pub struct ConstBufReader {
+    reader: ConstBytesReader,
+    buf: Vec<u8>,
+    expected_size: usize,
+    mask: u8,
+}
+impl ConstBufReader {
+    pub fn new(expected_size: usize, bits: u8) -> Self {
+        assert!((1..=8).contains(&bits));
+        let reader = ConstBytesReader::new(bits);
+        let buf = Vec::with_capacity(expected_size);
+        Self {
+            reader,
+            buf,
+            expected_size,
+            mask: (1u8 << bits) - 1,
+        }
+    }
+
+    /// # Result
+    /// is buffer full?
+    pub fn read_while_can<I, F>(&mut self, chan_iter: &mut I, mut map_iter_to_bits: F) -> bool
+    where
+        I:  Iterator<Item = u8>,
+        F: FnMut(&mut I) -> Option<u8>,
+    {
+        while !self.is_done() {
+            let Some(part_of_byte) = map_iter_to_bits(chan_iter) else {
+                return false
+            };
+            if let Some(byte) = self.reader.try_take_next_le_byte(part_of_byte) {
+                self.buf.push(byte)
+            }
+        }
+        true
+    }
+
+    #[inline(always)]
+    pub fn left_to_read(&self) -> usize {
+        self.expected_size - self.buf.len()
+    }
+    #[inline(always)]
+    pub fn bits(&self) -> u8 {
+        self.reader.bits
+    }
+    #[inline(always)]
+    pub fn mask(&self) -> u8 {
+        self.mask
+    }
+    #[inline(always)]
+    pub fn is_done(&self) -> bool {
+        self.buf.len() == self.expected_size
+    }
+    #[inline(always)]
+    pub fn buf_ref(&self) -> &Vec<u8> {
+        &self.buf
+    }
+    #[inline(always)]
+    pub fn take_buf(self) -> Vec<u8> {
+        self.buf
+    }
+}

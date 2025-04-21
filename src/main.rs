@@ -44,6 +44,12 @@ fn main_inner() -> Result<()> {
             let args: args::RemainderHider<Vec<u8>> = cli.try_into()?;
             args.transmute_msg().hide()?;
         }
+        
+        CliCmd::LessSignificantReveal { .. } => {
+            let args: args::RemainderRevealer = cli.try_into()?;
+            let (msg, ty) = args.reveal()?;
+            ty.do_action(msg, args.save_path)?
+        }
     }
     Ok(())
 }

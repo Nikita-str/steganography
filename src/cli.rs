@@ -73,7 +73,7 @@ pub enum CliCmd {
     },
     
     #[command(name = "png-less-hide", aliases = &["png-lh", "png-l+"])]
-    /// Hide a message into `.png`'s by using avg sum of initial images (modified will be created)
+    /// Hide a message into `.png`'s by using less significant bits of pixel channels in initial images (modified will be created)
     LessSignificantHide {
         #[arg(long)]
         /// Message that is transmitted. 
@@ -88,6 +88,13 @@ pub enum CliCmd {
         #[arg(long)]
         /// Make image grayscaled (density is 3 times less).
         gray: bool,
+    },
+    
+    #[command(name = "png-less-reveal", aliases = &["png-lr", "png-l="])]
+    /// Reveal a message into `.png`'s by using less significant bits of pixel channels
+    LessSignificantReveal {
+        #[command(flatten)]
+        save: SaveArg,
     },
 }
 
@@ -216,7 +223,6 @@ impl TryFrom<Cli> for args::DeltaRevealArgs {
     }
 }
 
-
 impl TryFrom<Cli> for args::AvgSumRevealArgs {
     type Error = steganography::Error;
 
@@ -250,6 +256,23 @@ impl TryFrom<Cli> for args::RemainderHider<Vec<u8>> {
                 modified_img: ImgPaths::new_any(cli.info.modified_img),
                 bits,
                 gray,
+            })
+        } else {
+            Err(Error::Other("Cannot convert into args: command is not a delta hide.".into()))
+        }
+    }
+}
+
+impl TryFrom<Cli> for args::RemainderRevealer {
+    type Error = steganography::Error;
+
+    fn try_from(cli: Cli) -> Result<Self> {
+        if let CliCmd::LessSignificantReveal { save } = cli.cmd {
+            let modified_img = Cli::check_mod_img(cli.info.modified_img)?;
+
+            Ok(Self {
+                modified_img,
+                save_path: save.save,
             })
         } else {
             Err(Error::Other("Cannot convert into args: command is not a delta hide.".into()))

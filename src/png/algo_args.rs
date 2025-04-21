@@ -4,7 +4,7 @@ use rand::RngCore;
 use crate::{prelude::*, PSEUDO_RAND_INDEXES};
 use crate::png::prelude::*;
 use crate::png::writer::TopBottomChunks;
-use crate::reader::ConstBytesReader;
+use crate::reader::{ConstBufReader, ConstBytesReader};
 use crate::writer::IterByteWriter;
 
 macro_rules! paths_pair {
@@ -163,12 +163,28 @@ pub struct AvgSumRevealArgs {
     pub save_path: Option<String>,
 }
 impl AvgSumRevealArgs {
-    pub fn reveal(&self) -> Result<(Vec<u8>, MsgType)> {
-        const HEADER_SIZE: usize = 7;
+    const HEADER_SIZE: usize = 7;
 
-        let mut chunk_size = AvgSumHideArgs::HEADER_CHUNK_SIZE;
-        let mut bits_per_chunk = AvgSumHideArgs::HEADER_BITS_PER_CHUNK;
-        let mut header_reader = AvgSumChunkReader::new(HEADER_SIZE, chunk_size, bits_per_chunk);
+    fn msg_reader_ctor(header: &Vec<u8>) -> Result<(Option<AvgSumChunkReader>, MsgType)> {
+        let ty = match MsgType::try_from_u8(header[0]) {
+            Some(ty_x) => ty_x,
+            _ => return Err(Error::InvalidMsgTypeByte(header[0])),
+        };
+
+        let bits_per_chunk = header[1];
+        let chunk_size = header[2];
+        
+        let len_bytes: [u8; 4] = header[Self::HEADER_SIZE - 4..Self::HEADER_SIZE].try_into().unwrap();
+        let msg_len = u32::from_le_bytes(len_bytes) as usize;
+
+        let reader = AvgSumChunkReader::new(msg_len, chunk_size, bits_per_chunk);
+        Ok((Some(reader), ty))
+    }
+
+    pub fn reveal(&self) -> Result<(Vec<u8>, MsgType)> {
+        let chunk_size = AvgSumHideArgs::HEADER_CHUNK_SIZE;
+        let bits_per_chunk = AvgSumHideArgs::HEADER_BITS_PER_CHUNK;
+        let mut header_reader = AvgSumChunkReader::new(Self::HEADER_SIZE, chunk_size, bits_per_chunk);
         let mut ty = MsgType::Reserved;
         
         let mut msg_reader: Option<AvgSumChunkReader> = None;
@@ -181,22 +197,9 @@ impl AvgSumRevealArgs {
             if header_reader.read_while_can(&mut chan_iter) {
                 continue 'modi
             } else if msg_reader.is_none() {
-                assert_eq!(header_reader.buf.len(), HEADER_SIZE);
-
+                assert_eq!(header_reader.buf.len(), Self::HEADER_SIZE);
                 let header = &header_reader.buf;
-                match MsgType::try_from_u8(header[0]) {
-                    Some(ty_x) => ty = ty_x,
-                    _ => return Err(Error::InvalidMsgTypeByte(header[0])),
-                };
-
-                bits_per_chunk = header[1];
-                chunk_size = header[2];
-                
-                let len_bytes: [u8; 4] = header[HEADER_SIZE - 4..HEADER_SIZE].try_into().unwrap();
-                let msg_len = u32::from_le_bytes(len_bytes) as usize;
-
-                let reader = AvgSumChunkReader::new(msg_len, chunk_size, bits_per_chunk);
-                msg_reader = Some(reader);
+                (msg_reader, ty) = Self::msg_reader_ctor(header)?;
             }
             
             if let Some(msg_reader) = &mut msg_reader { 
@@ -289,6 +292,9 @@ impl<ByteIter: IntoIterator<Item = u8>> RemainderHider<ByteIter> {
         }
     }
 }
+impl<Any> RemainderHider<Any> {
+    const HEADER_SIZE: usize = 4 + 4 + 2;
+}
 impl<ByteIter: ExactSizeIterator<Item = u8>> RemainderHider<ByteIter> {
     fn header_writer(&self) -> Result<RemainderHiderWriter<impl Iterator<Item = u8> + 'static>> {        
         let mut header = vec![];
@@ -307,9 +313,10 @@ impl<ByteIter: ExactSizeIterator<Item = u8>> RemainderHider<ByteIter> {
         header.extend((msg_len as u32).to_le_bytes());
 
         assert!(self.bits <= 4);
-        let bits_and_gray = (self.gray as u8) << 7;
+        let bits_and_gray = ((self.gray as u8) << 7) | self.bits;
         header.extend([self.ty as u8, bits_and_gray]);
 
+        assert_eq!(header.len(), Self::HEADER_SIZE);
         Ok(RemainderHiderWriter::new(header.into_iter(), 1))
     }
 
@@ -432,6 +439,109 @@ impl<I: Iterator<Item = u8>> HiderWriter for RemainderHiderWriter<I> {
     }
     fn bytes_left(&mut self) -> usize {
         self.iter_bw.bytes_left()
+    }
+}
+
+pub struct RemainderRevealer {
+    pub modified_img: Vec<String>,
+    pub save_path: Option<String>,
+}
+impl RemainderRevealer {
+    fn is_gray_calc(first_pixel: &Rgb<u8>) -> Result<bool> {
+        let is_gray = (first_pixel.0[0] & 1) == 0;
+        if is_gray {
+            let grayscale1 = first_pixel.0[0] == first_pixel.0[1];
+            let grayscale2 = first_pixel.0[0] == first_pixel.0[2];
+            if !grayscale1 || !grayscale2 {
+                return Err(Error::Other("The header says that picture is grayscaled but it doesn't".into()))
+            }
+        }
+        Ok(is_gray)
+    }
+
+    fn msg_reader_ctor(header: &Vec<u8>, expected_gray: bool) -> Result<(Option<ConstBufReader>, MsgType)> {
+        let len_bytes: [u8; 4] = header[4..8].try_into().unwrap();
+        let msg_len = u32::from_le_bytes(len_bytes) as usize;
+
+        let ty = header[9 - 1];
+        let bits_and_gray = header[10 - 1];
+
+        let ty = match MsgType::try_from_u8(ty) {
+            Some(ty_x) => ty_x,
+            _ => return Err(Error::InvalidMsgTypeByte(ty)),
+        };
+     
+        let bits = bits_and_gray & 0b1111;
+        let gray = (bits_and_gray & (1 << 7)) != 0;
+        if gray != expected_gray {
+            return Err(Error::Other("Inconsistent header".into()))
+        }
+
+        let reader = ConstBufReader::new(msg_len, bits);
+        Ok((Some(reader), ty))   
+    }
+
+    pub fn reveal(&self) -> Result<(Vec<u8>, MsgType)> {
+        let mut gray: Option<bool> = None;
+        let mut header_reader = ConstBufReader::new(RemainderHider::<()>::HEADER_SIZE, 1);
+        let mut msg_reader = None;
+        let mut ty = MsgType::Reserved;
+
+        // TODO: it can be paralleled (by images & by chunks of pixels in an image)
+        'modi: for path in &self.modified_img {
+            let img = Img::open_img(path);
+            let mut iter = img.img.pixels().peekable();
+
+            // find out is the picture a grayscaled
+            if gray.is_none() {
+                let Some(first_pixel) = iter.peek() else {
+                    continue 'modi // can .png pic have zero pixels?
+                };
+                gray = Some(Self::is_gray_calc(first_pixel)?);
+            }
+
+            let is_gray = gray.unwrap();
+            let mut iter: Box<dyn Iterator<Item = u8>> = if is_gray {
+                Box::new(img.img.pixels().map(|x|x.0[0]))
+            } else {
+                Box::new(img.img.pixels().flat_map(|x|&x.0).cloned())
+            };
+
+            if !header_reader.is_done() {
+                let mask = header_reader.mask();
+                header_reader.read_while_can(&mut iter, |iter| {
+                    let byte = iter.next()?;
+                    Some(byte & mask)
+                });
+
+                if !header_reader.is_done() {
+                    continue 'modi
+                }
+
+                (msg_reader, ty) = Self::msg_reader_ctor(header_reader.buf_ref(), is_gray)?;
+            }
+
+            if let Some(msg_reader) = &mut msg_reader {
+                let mask = msg_reader.mask();
+                msg_reader.read_while_can(&mut iter, |iter| {
+                    let byte = iter.next()?;
+                    Some(byte & mask)
+                });
+
+                if msg_reader.is_done() { break 'modi }
+            }
+        }
+
+        if ty.is_reserved() {
+            return Err(Error::UnreadedHeader);
+        }
+        let Some(msg_reader) = msg_reader else {
+            return Err(Error::UnreadedHeader);
+        };
+        if !msg_reader.is_done() {
+            return Err(Error::UnfullResult(msg_reader.left_to_read()));
+        }
+        Ok((msg_reader.take_buf(), ty))
     }
 }
 
