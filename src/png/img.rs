@@ -49,10 +49,12 @@ impl ImgPaths {
     pub fn new_any(imgs: Option<Vec<String>>) -> Self {
         Self { paths: imgs.unwrap_or_default() }
     }
+
     pub fn is_empty(&self) -> bool {
         self.paths.is_empty()
     }
-    pub fn modified_path(&self, index: usize, img_path: impl AsRef<Path>) -> Result<Cow<str>> {
+
+    pub fn modified_path(&self, index: usize, img_path: impl AsRef<Path>) -> Result<Cow<'_, str>> {
         if let Some(path) = self.paths.get(index) {
             return Ok(Cow::Borrowed(path))
         }
@@ -66,6 +68,5 @@ impl ImgPaths {
         path.push_str("_mod.png");
 
         Ok(Cow::Owned(path))
-    }
-    
+    }    
 }

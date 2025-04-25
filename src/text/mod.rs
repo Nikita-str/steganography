@@ -11,7 +11,7 @@ use crate::{Error, Result};
 // TODO: chunked repeat wo key (count amount of repeatness in chunk % 2)
 
 pub trait RepeatTypo {
-    fn next_typo(&mut self, not: char) -> char;
+    fn next_typo(&mut self, cur: char, next: char) -> char;
 }
 pub struct RepeatConstTypo {
     a: char,
@@ -26,11 +26,15 @@ impl RepeatConstTypo {
     }
 }
 impl RepeatTypo for RepeatConstTypo {
-    fn next_typo(&mut self, not: char) -> char {
-        if self.a == not {
-            self.b
-        } else {
-            self.a
+    fn next_typo(&mut self, cur: char, next: char) -> char {
+        if cur == next  { 
+            if self.a == next {
+                self.b
+            } else {
+                self.a
+            }
+        } else { 
+            cur 
         }
     }
 }
@@ -72,14 +76,8 @@ impl<'s, Typo: RepeatTypo> RepeatCharHider<'s, Typo> {
     }
 
     fn repeat_char(ret: &mut String, typo: &mut Typo, char: char, next_char: char) {
-        let repeat_char = if next_char == char { 
-            typo.next_typo(char)
-        } else { 
-            char 
-        };
-
         ret.push(char);
-        ret.push(repeat_char);
+        ret.push(typo.next_typo(char, next_char));
         ret.push(next_char);
     }
 

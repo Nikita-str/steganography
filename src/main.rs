@@ -8,16 +8,21 @@ use steganography::text::{RepeatCharHider, RepeatCharRevealer, RepeatConstTypo};
 fn main() {
     let start = std::time::Instant::now();
     
-    if let Err(err) = main_inner() {
-        println!("Error: {err}")
-    } else {
+    let cli = Cli::parse();
+    if main_inner_err_handle(cli).is_ok() {
         println!("\nDuration: {}ms", start.elapsed().as_millis());
     }
 }
 
-fn main_inner() -> Result<()> {
-    let cli = Cli::parse();
+fn main_inner_err_handle(cli: Cli) -> Result<()> {
+    if let Err(err) = main_inner(cli) {
+        println!("Error: {err}");
+        return Err(err)
+    }
+    Ok(())
+}
 
+fn main_inner(cli: Cli) -> Result<()> {
     match cli.cmd {
         CliCmd::PicCmd(args) => match args.cmd {
             PicCmd::DeltaHide { .. } => {
@@ -71,4 +76,67 @@ fn main_inner() -> Result<()> {
         }
     }
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const PROG_NAME: &str = "steganography";
+
+    #[test]
+    fn test_txt_cli() -> Result<()> {
+        let freq = "71";
+
+        // HIDE:
+        let msg_file = r#"file:tests\txt\Balmont_and_Blake.txt"#;
+        let msg_hidden_file = r#"tests\txt\gen_Dostoevsky_Idiot_hidden.txt"#;
+
+        let args = vec![
+            PROG_NAME,
+            "txt",
+            "--init",
+            r#"file:tests\txt\Dostoevsky_Idiot.txt"#,
+            "txt-rh",
+            "--mod",
+            msg_hidden_file,
+            "--msg",
+            msg_file,
+            "--freq",
+            freq,
+        ];
+        
+        let msg_send = std::fs::read_to_string(msg_file.split_once("file:").unwrap().1)?;
+        
+        let cli = Cli::parse_from(args);
+        main_inner_err_handle(cli)?;
+
+        // REVEAL:
+        let msg_hidden_file = "file:".to_owned() + msg_hidden_file;
+        let msg_reveal_file = r#"tests\txt\gen_Balmont_and_Blake_reveal.txt"#;
+
+        let args = vec![
+            PROG_NAME,
+            "txt",
+            "--init",
+            r#"file:tests\txt\Dostoevsky_Idiot.txt"#,
+            "txt-rr",
+            "--mod",
+            &msg_hidden_file,
+            "--freq",
+            freq,
+            "--save",
+            msg_reveal_file,
+        ];
+
+        let cli = Cli::parse_from(args);
+        main_inner_err_handle(cli)?;
+
+        let msg_received = std::fs::read_to_string(msg_reveal_file)?;
+
+        // ASSERT CORRECTNESS:
+        assert_eq!(msg_send, msg_received);
+
+        Ok(())
+    }
 }

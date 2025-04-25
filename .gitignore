@@ -1,3 +1,5 @@
 /target
 file.bin
 output.txt
+
+/tests/txt/gen_*

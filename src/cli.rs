@@ -9,6 +9,7 @@ use steganography::text::RepeatConstTypo;
 
 // TODO: text in code comment
 // TODO: .webp
+// TODO: alpha channel : ignore?
 
 // TODO: chacha8rng for noise 
 
