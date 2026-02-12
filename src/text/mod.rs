@@ -7,6 +7,8 @@ use crate::reader::ConstBytesReader;
 use crate::writer::IterByteWriter;
 use crate::{Error, Result};
 
+pub mod num;
+
 // TODO: exchange [a -> o; i -> e;]
 // TODO: chunked repeat wo key (count amount of repeatness in chunk % 2)
 
