@@ -110,6 +110,10 @@ impl BitsToNum10 {
         }
     }
 
+    pub const fn new_empty() -> Self {
+        Self::new_const::<0>(0)
+    }
+
     pub const fn new_u32(chunk: u64) -> Self {
         Self::new_const::<32>(chunk)
     }
@@ -208,7 +212,7 @@ mod tests {
                     best_n.push(n);
                 }
                 best_bits.push(bits);
-                println!("bits = {bits:2} <--> n = {n:2} (loss = {best_loss_proc:.3}%)");
+                // println!("bits = {bits:2} <--> n = {n:2} (loss = {best_loss_proc:.3}%)");
             }
         }
 
