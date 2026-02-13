@@ -3,14 +3,30 @@
 // * 3 bits have S3 = 8
 // * HM: [00:00 ..= 23:59] have S3 = 24 * 60 = 1440
 
-pub trait S3Writer<W: std::io::Write, R: std::io::Read> {
+pub trait S3WriterInfo {
     /// How many bits are needed to write once?
-    fn bits_once(&self) -> usize;
+    fn bits_once(&self) -> u8;
 
     /// How many S3 are needed to write once?
-    fn s3_once(&self) -> usize;
+    fn s3_once(&self) -> u64;
+}
 
-    fn write(&mut self, bit_buf: &mut S3BitBuf, w: &mut W);
+pub trait S3Writer<W>: S3WriterInfo {
+    type Error;
+
+    /// # Return
+    /// * Was something write?
+    fn write_full(&mut self, reader: &mut S3BitReader, w: &mut W) -> Result<bool, Self::Error> {
+        if reader.need_fill() {
+            Ok(false)
+        } else {
+            let bits = reader.take_bits_from_writer(self);
+            self.write(bits, w)?;
+            Ok(true)
+        }
+    }
+
+    fn write(&mut self, bits: u64, w: &mut W) -> Result<(), Self::Error>;
 }
 
 pub trait RngFiller {
@@ -18,8 +34,107 @@ pub trait RngFiller {
 }
 
 pub struct S3BitReader {
-    buf: S3BitBuf,
+    buf: S3BitBufReader,
     rng_buf: RngBuf,
+    bits_to_write: u64,
+    max_written_value: u64,
+    total_bits_to_write: u8,
+    eof_stream: bool,
+}
+
+impl S3BitReader {
+    pub fn new<R: std::io::Read, Rng: RngFiller>(&mut self, r: &mut R, rng: &mut Rng) -> Result<Self, std::io::Error> {
+        Ok(Self {
+            buf: S3BitBufReader::new(r)?,
+            rng_buf: RngBuf::new(rng),
+            bits_to_write: 0,
+            max_written_value: 0,
+            total_bits_to_write: 0,
+            eof_stream: false,
+        })
+    }
+
+    pub fn need_fill(&self) -> bool {
+        self.max_written_value == 0
+    }
+    
+    pub fn is_eof(&self) -> bool {
+        self.eof_stream
+    }
+
+    pub fn take_bits_from_writer<W: S3WriterInfo + ?Sized>(&mut self, s3w: &W) -> u64 {
+        self.take_bits(s3w.s3_once(), s3w.bits_once())
+    }
+
+    /// # Panic
+    /// * if `self.need_fill()`
+    pub fn take_bits(&mut self, s3: u64, n: u8) -> u64 {
+        if self.max_written_value == 0 {
+            panic!("S3BitReader: Need fill! (call `fill` & test if by `need_fill`)")
+        }
+
+        let after_bit_len;
+        if let Some(written_after) = self.max_written_value.checked_mul(s3) {
+            after_bit_len = 64 - written_after.leading_zeros() as u8;
+            self.max_written_value = written_after;
+
+            if after_bit_len > self.total_bits_to_write {
+                self.max_written_value = 0;
+            }
+        } else {
+            let written_after = self.max_written_value as u128 * s3 as u128;
+            after_bit_len = 128 - written_after.leading_zeros() as u8;
+            self.max_written_value = 0;
+        }
+
+        if self.total_bits_to_write >= after_bit_len {
+            let bits = self.bits_to_write % s3;
+            self.bits_to_write /= s3;
+            bits
+        } else {
+            debug_assert!(self.max_written_value == 0);
+
+            let delta = after_bit_len - self.total_bits_to_write;
+            debug_assert!(delta > 0);
+            let bits = self.bits_to_write;
+            let mut bits = self.rng_buf.concat(bits, n - delta, delta);
+
+            if bits >= s3 {
+                bits ^= 1 << (n - 1);
+                debug_assert!(bits < s3);
+            }
+
+            bits
+        }
+    }
+
+    pub fn fill_buf<R: std::io::Read>(&mut self, r: &mut R) -> Result<(), std::io::Error> {
+        self.buf.fill(r)
+    }
+
+    pub fn fill_rng<R: RngFiller>(&mut self, rng: &mut R) {
+        self.rng_buf.fill(rng)
+    }
+       
+    pub fn fill(&mut self, chunk_sz: u8) {
+        debug_assert!(chunk_sz <= 64);
+
+        if self.max_written_value != 0 {
+            return
+        }
+
+        let (bits, real_sz) = self.buf.try_take_bits(chunk_sz);
+        if real_sz != chunk_sz {
+            assert!(self.buf.is_reader_eof(), "seems like you forget to fill readder buffer");
+            if real_sz == 0 {
+                self.eof_stream = true;
+            }
+        }
+
+        self.bits_to_write = bits;
+        self.total_bits_to_write = chunk_sz;
+        self.max_written_value = 1;
+    }
 }
 
 #[derive(Debug)]
@@ -49,6 +164,11 @@ impl RngBuf {
     #[inline]
     pub fn r_bits(&mut self, n: u8) -> u64 {
         self.buf.take_bits(n)
+    }
+    
+    #[inline]
+    pub fn concat(&mut self, bits: u64, bits_n: u8, more_n: u8) -> u64 {
+        bits | (self.r_bits(more_n)) << bits_n
     }
 }
 
@@ -135,8 +255,6 @@ impl S3BitBufReader {
     pub fn is_eof(&self) -> bool {
         self.reader_eof && self.buf.bit_rest == 0
     }
-
-
 }
 
 
@@ -207,6 +325,9 @@ mod tests {
     use super::*;
 
     // TODO: test RngBuf
+    // TODO: more tests for Reader
+
+    // TODO: test `S3BitReader::take_bits`
 
     #[test]
     fn test_bit_buf() {
