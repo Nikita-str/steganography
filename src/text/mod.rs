@@ -10,6 +10,7 @@ use crate::{Error, Result};
 pub mod num;
 pub mod time;
 pub mod s3;
+pub mod str_writer;
 
 // TODO: exchange [a -> o; i -> e;]
 // TODO: chunked repeat wo key (count amount of repeatness in chunk % 2)
