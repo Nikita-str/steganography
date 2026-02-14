@@ -1,32 +1,6 @@
 use crate::text::s3::{S3Writer, S3WriterInfo};
 use crate::text::str_writer::WriteExt;
 
-/// Writes `n2` that in `0..=99`
-fn write_n2<W: WriteExt>(w: &mut W, n2: u16) -> std::io::Result<()> {
-    debug_assert!(n2 <= 99);
-
-    let a = (n2 / 10) as u8 + b'0';
-    let b = (n2 % 10) as u8 + b'0';
-    w.write_char(a as char)?;
-    w.write_char(b as char)?;
-
-    Ok(())
-}
-
-/// Writes `n3` that in `0..=999`
-fn write_n3<W: WriteExt>(w: &mut W, n3: u16) -> std::io::Result<()> {
-    debug_assert!(n3 <= 999);
-
-    let a = ((n3 / 10) / 10) as u8 + b'0';
-    let b = ((n3 / 10) % 10) as u8 + b'0';
-    let c = (n3 % 10) as u8 + b'0';
-    w.write_char(a as char)?;
-    w.write_char(b as char)?;
-    w.write_char(c as char)?;
-
-    Ok(())
-}
-
 /// Reads `n2` that in `0..=99`
 fn read_n2(r: &str) -> u32 {
     debug_assert!(r.len() == 2);
@@ -268,9 +242,9 @@ impl<W: WriteExt> S3Writer<W> for S3TimeWriter {
                 let m = x % 60;
                 let h = x / 60;
 
-                write_n2(w, h as u16)?;
+                w.write_n2z(h as u8)?;
                 w.write_char(':')?;
-                write_n2(w, m as u16)?;
+                w.write_n2z(m as u8)?;
             }
             TimeFormat::HMS => {
                 let s = x % 60;
@@ -279,11 +253,11 @@ impl<W: WriteExt> S3Writer<W> for S3TimeWriter {
                 let m = x % 60;
                 let h = x / 60;
 
-                write_n2(w, h as u16)?;
+                w.write_n2z(h as u8)?;
                 w.write_char(':')?;
-                write_n2(w, m as u16)?;
+                w.write_n2z(m as u8)?;
                 w.write_char(':')?;
-                write_n2(w, s as u16)?;
+                w.write_n2z(s as u8)?;
             }
             TimeFormat::HMSMill => {
                 let ms = x % 1000;
@@ -295,13 +269,13 @@ impl<W: WriteExt> S3Writer<W> for S3TimeWriter {
                 let m = x % 60;
                 let h = x / 60;
 
-                write_n2(w, h as u16)?;
+                w.write_n2z(h as u8)?;
                 w.write_char(':')?;
-                write_n2(w, m as u16)?;
+                w.write_n2z(m as u8)?;
                 w.write_char(':')?;
-                write_n2(w, s as u16)?;
+                w.write_n2z(s as u8)?;
                 w.write_char('.')?;
-                write_n3(w, ms as u16)?;
+                w.write_n3z(ms as u16)?;
             }
         }
 

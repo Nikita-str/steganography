@@ -7,10 +7,16 @@ use crate::reader::ConstBytesReader;
 use crate::writer::IterByteWriter;
 use crate::{Error, Result};
 
+pub mod s3;
 pub mod num;
 pub mod time;
-pub mod s3;
+pub mod price;
+
 pub mod str_writer;
+
+// TODO: code (rust, python)
+// TODO: mail (especially temp mails -- the existence of a mail in tmp-mail domains is stored for a short time)
+// pub mod csv;
 
 // TODO: exchange [a -> o; i -> e;]
 // TODO: chunked repeat wo key (count amount of repeatness in chunk % 2)

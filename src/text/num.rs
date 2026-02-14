@@ -273,6 +273,7 @@ pub struct S3RevNumsWriter {
     s3_once: u64,
     len: u8,
     zeroed: bool,
+    allow_empty: bool,
 }
 
 impl S3RevNumsWriter {
@@ -282,7 +283,18 @@ impl S3RevNumsWriter {
             s3_once: 10u64.pow(num_len as u32),
             len: num_len,
             zeroed,
+            allow_empty: false,
         }
+    }
+
+    #[inline(always)]
+    pub fn set_zeroed(&mut self, zeroed: bool) {
+        self.zeroed = zeroed;
+    }
+
+    #[inline(always)]
+    pub fn set_allow_empty(&mut self, allow_empty: bool) {
+        self.allow_empty = allow_empty;
     }
 }
 
@@ -317,7 +329,7 @@ impl<W: WriteExt> S3Writer<W> for S3RevNumsWriter {
             }
         }
 
-        if !display_zero {
+        if !self.allow_empty && !display_zero {
             S3NumWriter::new_display_zero().write_u8(w, 0)?;
         }
 

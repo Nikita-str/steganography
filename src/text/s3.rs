@@ -29,9 +29,56 @@ pub trait S3Writer<W>: S3WriterInfo {
     fn write(&mut self, x: u64, w: &mut W) -> Result<(), Self::Error>;
 }
 
-pub trait RngFiller {
-    fn r64(&mut self) -> u64;
+pub trait S3WriterRand<W, Rng>: S3WriterInfo {
+    type Error;
+
+    /// # Return
+    /// * Was something write?
+    fn write_full(&mut self, reader: &mut S3BitReader, w: &mut W, rng: &mut Rng) -> Result<bool, Self::Error> {
+        if reader.need_fill() {
+            Ok(false)
+        } else {
+            let bits = reader.take_bits_from_writer(self);
+            self.write(bits, w, rng)?;
+            Ok(true)
+        }
+    }
+
+    fn write(&mut self, x: u64, w: &mut W, rng: &mut Rng) -> Result<(), Self::Error>;
 }
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub struct S3WriterRandWrap<T>(pub T);
+
+impl<T: S3WriterInfo> S3WriterInfo for S3WriterRandWrap<T> {
+    fn bits_once(&self) -> u8 {
+        self.0.bits_once()
+    }
+
+    fn s3_once(&self) -> u64 {
+        self.0.s3_once()
+    }
+}
+
+impl<W, Rng, Err, T: S3Writer<W, Error = Err>> S3WriterRand<W, Rng> for S3WriterRandWrap<T> {
+    type Error = Err;
+
+    fn write(&mut self, x: u64, w: &mut W, _: &mut Rng) -> Result<(), Self::Error> {
+        S3Writer::write(&mut self.0, x, w)
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub trait RngMinimal {
+    fn r8(&mut self) -> u8;
+    fn r64(&mut self) -> u64;
+
+    fn r8_range(&mut self, range: std::ops::RangeInclusive<u8>) -> u8;
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub struct S3BitReader {
     buf: S3BitBufReader,
@@ -43,7 +90,7 @@ pub struct S3BitReader {
 }
 
 impl S3BitReader {
-    pub fn new<R: std::io::Read, Rng: RngFiller>(&mut self, r: &mut R, rng: &mut Rng) -> Result<Self, std::io::Error> {
+    pub fn new<R: std::io::Read, Rng: RngMinimal>(&mut self, r: &mut R, rng: &mut Rng) -> Result<Self, std::io::Error> {
         Ok(Self {
             buf: S3BitBufReader::new(r)?,
             rng_buf: RngBuf::new(rng),
@@ -112,7 +159,7 @@ impl S3BitReader {
         self.buf.fill(r)
     }
 
-    pub fn fill_rng<R: RngFiller>(&mut self, rng: &mut R) {
+    pub fn fill_rng<R: RngMinimal>(&mut self, rng: &mut R) {
         self.rng_buf.fill(rng)
     }
        
@@ -142,7 +189,7 @@ pub struct RngBuf {
     buf: S3BitBuf,
 }
 impl RngBuf {
-    pub fn new<R: RngFiller>(rng: &mut R) -> Self {
+    pub fn new<R: RngMinimal>(rng: &mut R) -> Self {
         let buf = S3BitBuf {
             lower_bits: rng.r64(),
             upper_bits: rng.r64(),
@@ -152,7 +199,7 @@ impl RngBuf {
     }
     
     #[inline]
-    pub fn fill<R: RngFiller>(&mut self, rng: &mut R) {
+    pub fn fill<R: RngMinimal>(&mut self, rng: &mut R) {
         if self.buf.bit_rest >= S3BitBuf::HALF_SIZE {
             return
         }
