@@ -1,5 +1,7 @@
-
 use std::f32::consts::LOG2_10;
+
+use crate::text::s3::{S3Writer, S3WriterInfo};
+use crate::text::str_writer::WriteExt;
 
 pub struct Num10ToBits {
     bits: u64,
@@ -83,6 +85,7 @@ impl Num10ToBits {
     }
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub struct BitsToNum10 {
     bits: u64,
@@ -146,8 +149,188 @@ impl BitsToNum10 {
     }
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[derive(Clone, Copy)]
+pub struct S3NumWriter<const IS_ZERO_DISPLAY: bool> { }
+
+impl S3NumWriter<true> {
+    #[inline(always)]
+    pub fn new_display_zero() -> S3NumWriter<true> {
+        Self { }
+    }
+}
+impl S3NumWriter<false> {
+    #[inline(always)]
+    pub fn new_non_display_zero() -> S3NumWriter<false> {
+        Self { }
+    }
+}
+
+impl<const IS_ZERO_DISPLAY: bool> S3NumWriter<IS_ZERO_DISPLAY> {
+    #[inline]
+    pub fn write_u8<W: WriteExt>(&mut self, w: &mut W, x: u8) -> Result<(), std::io::Error> {
+        debug_assert!(x < 10);
+
+        if !IS_ZERO_DISPLAY && x == 0 {
+            return Ok(())
+        }
+
+        w.write_char((b'0' + x as u8) as char)
+    }
+}
+
+impl<const IS_ZERO_DISPLAY: bool> S3WriterInfo for S3NumWriter<IS_ZERO_DISPLAY> {
+    fn bits_once(&self) -> u8 {
+        4 // ceil(log2(10))
+    }
+
+    fn s3_once(&self) -> u64 {
+        10
+    }
+}
+
+impl<W: WriteExt, const IS_ZERO_DISPLAY: bool> S3Writer<W> for S3NumWriter<IS_ZERO_DISPLAY> {
+    type Error = std::io::Error;
+
+    /// # Panics
+    /// * if `self.s3_once() <= x`
+    fn write(&mut self, x: u64, w: &mut W) -> Result<(), Self::Error> {
+        debug_assert!(x < self.s3_once());
+        self.write_u8(w, x as u8)
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[derive(Clone)]
+pub struct S3NumsWriter {
+    buf: Vec<u8>,
+    s3_once: u64,
+    len: u8,
+    zeroed: bool,
+}
+
+impl S3NumsWriter {
+    #[inline(always)]
+    pub fn new(num_len: u8, zeroed: bool) -> S3NumsWriter {
+        Self {
+            buf: Vec::with_capacity(num_len as usize),
+            s3_once: 10u64.pow(num_len as u32),
+            len: num_len,
+            zeroed,
+        }
+    }
+}
+
+impl S3WriterInfo for S3NumsWriter {
+    fn bits_once(&self) -> u8 {
+        (self.s3_once.ilog2() + 1) as u8
+    }
+
+    fn s3_once(&self) -> u64 {
+        self.s3_once
+    }
+}
+
+impl<W: WriteExt> S3Writer<W> for S3NumsWriter {
+    type Error = std::io::Error;
+
+    /// # Panics
+    /// * if `self.s3_once() <= x`
+    fn write(&mut self, mut x: u64, w: &mut W) -> Result<(), Self::Error> {
+        debug_assert!(x < self.s3_once());
+
+        self.buf.clear();
+        for _ in 0..self.len {
+            let num = (x % 10) as u8;
+            x = x / 10;
+            self.buf.push(num);
+        }
+
+        let mut display_zero = self.zeroed;
+        for x in self.buf.drain(..).rev() {
+            let is_zero = x == 0;
+            display_zero |= !is_zero;
+
+            if display_zero || !is_zero {
+                S3NumWriter::new_display_zero().write_u8(w, x)?;
+            }
+        }
+
+        if !display_zero {
+            S3NumWriter::new_display_zero().write_u8(w, 0)?;
+        }
+
+        Ok(())
+    }
+}
+
+// ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━
+
+#[derive(Clone, Copy)]
+pub struct S3RevNumsWriter {
+    s3_once: u64,
+    len: u8,
+    zeroed: bool,
+}
+
+impl S3RevNumsWriter {
+    #[inline(always)]
+    pub fn new(num_len: u8, zeroed: bool) -> S3RevNumsWriter {
+        Self {
+            s3_once: 10u64.pow(num_len as u32),
+            len: num_len,
+            zeroed,
+        }
+    }
+}
+
+impl S3WriterInfo for S3RevNumsWriter {
+    fn bits_once(&self) -> u8 {
+        (self.s3_once.ilog2() + 1) as u8
+    }
+
+    fn s3_once(&self) -> u64 {
+        self.s3_once
+    }
+}
+
+impl<W: WriteExt> S3Writer<W> for S3RevNumsWriter {
+    type Error = std::io::Error;
+
+    /// # Panics
+    /// * if `self.s3_once() <= x`
+    fn write(&mut self, mut x: u64, w: &mut W) -> Result<(), Self::Error> {
+        debug_assert!(x < self.s3_once());
+
+        let mut display_zero = self.zeroed;
+        for _ in 0..self.len {
+            let num = (x % 10) as u8;
+            x = x / 10;
+
+            let is_zero = num == 0;
+            display_zero |= !is_zero;
+            
+            if display_zero || !is_zero {
+                S3NumWriter::new_display_zero().write_u8(w, num)?;
+            }
+        }
+
+        if !display_zero {
+            S3NumWriter::new_display_zero().write_u8(w, 0)?;
+        }
+
+        Ok(())
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 #[cfg(test)]
 mod tests {
+    use crate::text::str_writer::WriterFmt;
+
     use super::*;
 
     #[test]
@@ -187,6 +370,64 @@ mod tests {
             }
             assert_eq!(n2b.try_take(), Some(chunk));
         }
+    }
+
+    #[test]
+    fn test_num_s3_writer() {
+        let nums = vec![257, 739, 25, 100, 10, 0, 1, 2, 9];
+
+        let mut wr = S3NumsWriter::new(3, false);
+        let mut zeroed_wr = S3NumsWriter::new(3, true);
+
+        let str = String::with_capacity(10);
+        let mut str = WriterFmt::new(str);
+
+        for num in nums {
+            str.clear();
+            wr.write(num, &mut str).unwrap();
+            assert_eq!(str.as_ref(), &format!("{num}"));
+            
+            str.clear();
+            zeroed_wr.write(num, &mut str).unwrap();
+            assert_eq!(str.as_ref(), &format!("{num:03}"));
+        }
+    }
+    
+    #[test]
+    fn test_num_s3_writer_rev() {
+        let nums = vec![257, 739, 25, 100, 10, 0, 1, 2, 9];
+
+        let expect_wr = vec!["752", "937", "520", "1", "10", "0", "100", "200", "900"];
+        let expect_zeroed = vec!["752", "937", "520", "001", "010", "000", "100", "200", "900"];
+
+        let mut wr = S3RevNumsWriter::new(3, false);
+        let mut zeroed_wr = S3RevNumsWriter::new(3, true);
+
+        let str = String::with_capacity(10);
+        let mut str = WriterFmt::new(str);
+
+        for (i, num) in nums.into_iter().enumerate() {
+            str.clear();
+            wr.write(num, &mut str).unwrap();
+            assert_eq!(str.as_ref(), &expect_wr[i]);
+            
+            str.clear();
+            zeroed_wr.write(num, &mut str).unwrap();
+            assert_eq!(str.as_ref(), &expect_zeroed[i]);
+        }
+
+        let mut wr = S3RevNumsWriter::new(4, false);
+        str.clear();
+        wr.write(20, &mut str).unwrap();
+        assert_eq!(str.as_ref(), "200");
+
+        str.clear();
+        wr.write(120, &mut str).unwrap();
+        assert_eq!(str.as_ref(), "210");
+        
+        str.clear();
+        wr.write(1230, &mut str).unwrap();
+        assert_eq!(str.as_ref(), "321");
     }
 
     #[test]
