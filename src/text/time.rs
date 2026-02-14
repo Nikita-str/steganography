@@ -1,7 +1,8 @@
-use std::fmt::Write;
+use crate::text::s3::{S3Writer, S3WriterInfo};
+use crate::text::str_writer::WriteExt;
 
 /// Writes `n2` that in `0..=99`
-fn write_n2<W: Write>(w: &mut W, n2: u16) -> std::fmt::Result {
+fn write_n2<W: WriteExt>(w: &mut W, n2: u16) -> std::io::Result<()> {
     debug_assert!(n2 <= 99);
 
     let a = (n2 / 10) as u8 + b'0';
@@ -13,7 +14,7 @@ fn write_n2<W: Write>(w: &mut W, n2: u16) -> std::fmt::Result {
 }
 
 /// Writes `n3` that in `0..=999`
-fn write_n3<W: Write>(w: &mut W, n3: u16) -> std::fmt::Result {
+fn write_n3<W: WriteExt>(w: &mut W, n3: u16) -> std::io::Result<()> {
     debug_assert!(n3 <= 999);
 
     let a = ((n3 / 10) / 10) as u8 + b'0';
@@ -57,6 +58,15 @@ pub enum TimeFormat {
     HMSMill,
 }
 impl TimeFormat {
+    pub const fn bit_size(self) -> u8 {
+        let floor_bit = match self {
+            TimeFormat::HM => u64::ilog2(self.variants()) as u8,
+            TimeFormat::HMS => u64::ilog2(self.variants()) as u8,
+            TimeFormat::HMSMill => u64::ilog2(self.variants()) as u8,
+        };
+        floor_bit + 1
+    }
+
     pub const fn variants(self) -> u64 {
         match self {
             TimeFormat::HM => 24 * 60,
@@ -207,49 +217,9 @@ impl BitsToTime {
     /// # Return
     /// * `Some(_)` => something was writed
     /// * `None` => `self.is_done()` (do nothing)
-    pub fn write<W: Write>(&mut self, w: &mut W) -> Result<Option<()>, std::fmt::Error> {
-        if let Some(x) = self.next_u32() {
-            match self.fmt {
-                TimeFormat::HM => {
-                    let m = x % 60;
-                    let h = x / 60;
-
-                    write_n2(w, h as u16)?;
-                    w.write_char(':')?;
-                    write_n2(w, m as u16)?;
-                }
-                TimeFormat::HMS => {
-                    let s = x % 60;
-                    let x = x / 60;
-
-                    let m = x % 60;
-                    let h = x / 60;
-
-                    write_n2(w, h as u16)?;
-                    w.write_char(':')?;
-                    write_n2(w, m as u16)?;
-                    w.write_char(':')?;
-                    write_n2(w, s as u16)?;
-                }
-                TimeFormat::HMSMill => {
-                    let ms = x % 1000;
-                    let x = x / 1000;
-
-                    let s = x % 60;
-                    let x = x / 60;
-                    
-                    let m = x % 60;
-                    let h = x / 60;
-
-                    write_n2(w, h as u16)?;
-                    w.write_char(':')?;
-                    write_n2(w, m as u16)?;
-                    w.write_char(':')?;
-                    write_n2(w, s as u16)?;
-                    w.write_char('.')?;
-                    write_n3(w, ms as u16)?;
-                }
-            }
+    pub fn write<W: WriteExt>(&mut self, w: &mut W) -> std::io::Result<Option<()>> {
+        if let Some(bits) = self.next_u32() {
+            S3TimeWriter::new(self.fmt).write(bits as u64, w)?;
             Ok(Some(()))
         } else {
             Ok(None)
@@ -266,9 +236,84 @@ impl BitsToTime {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct S3TimeWriter { fmt: TimeFormat }
+impl S3TimeWriter {
+    #[inline(always)]
+    pub fn new(fmt: TimeFormat) -> Self {
+        Self { fmt }
+    }   
+}
+
+impl S3WriterInfo for S3TimeWriter {
+    fn bits_once(&self) -> u8 {
+        self.fmt.bit_size()
+    }
+
+    fn s3_once(&self) -> u64 {
+        self.fmt.variants()
+    }
+}
+
+impl<W: WriteExt> S3Writer<W> for S3TimeWriter {
+    type Error = std::io::Error;
+
+    /// # Panics
+    /// * if `self.s3_once() <= x`
+    fn write(&mut self, x: u64, w: &mut W) -> Result<(), Self::Error> {
+        debug_assert!(x < self.s3_once());
+
+        match self.fmt {
+            TimeFormat::HM => {
+                let m = x % 60;
+                let h = x / 60;
+
+                write_n2(w, h as u16)?;
+                w.write_char(':')?;
+                write_n2(w, m as u16)?;
+            }
+            TimeFormat::HMS => {
+                let s = x % 60;
+                let x = x / 60;
+
+                let m = x % 60;
+                let h = x / 60;
+
+                write_n2(w, h as u16)?;
+                w.write_char(':')?;
+                write_n2(w, m as u16)?;
+                w.write_char(':')?;
+                write_n2(w, s as u16)?;
+            }
+            TimeFormat::HMSMill => {
+                let ms = x % 1000;
+                let x = x / 1000;
+
+                let s = x % 60;
+                let x = x / 60;
+                
+                let m = x % 60;
+                let h = x / 60;
+
+                write_n2(w, h as u16)?;
+                w.write_char(':')?;
+                write_n2(w, m as u16)?;
+                w.write_char(':')?;
+                write_n2(w, s as u16)?;
+                w.write_char('.')?;
+                write_n3(w, ms as u16)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rand::{RngCore, rng};
+    use crate::text::str_writer::WriterFmt;
+
     use super::*;
 
     #[test]
@@ -290,7 +335,8 @@ mod tests {
             "01:00",
         ];
 
-        let mut time = String::with_capacity(5);
+        let time = String::with_capacity(5);
+        let mut time = WriterFmt::new(time);
 
         for (chunk, expect) in chunks.into_iter().zip(expects) {
             time.clear();
@@ -299,7 +345,7 @@ mod tests {
             assert!(!b2t.is_done());
             b2t.write(&mut time).unwrap().unwrap();
             assert!(b2t.is_done());
-            assert_eq!(&time, &expect);
+            assert_eq!(time.as_ref(), &expect);
 
 
             let mut t2b = TimeToBits::new(1, TimeFormat::HM);

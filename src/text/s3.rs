@@ -26,7 +26,7 @@ pub trait S3Writer<W>: S3WriterInfo {
         }
     }
 
-    fn write(&mut self, bits: u64, w: &mut W) -> Result<(), Self::Error>;
+    fn write(&mut self, x: u64, w: &mut W) -> Result<(), Self::Error>;
 }
 
 pub trait RngFiller {
