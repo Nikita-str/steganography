@@ -105,23 +105,23 @@ impl TxtVariation {
 
     /// # Panics 
     /// * if `self.variation_amount() <= 1`
-    pub fn seal(mut self) -> TxtVariationSealed {
+    pub fn seal(mut self) -> TxtVariationWriter {
         if self.s3 == 0 || self.s3 == 1 {
             self.set_s3(self.variation_amount());
         }
 
         assert!(self.variation_amount() > 1);
 
-        TxtVariationSealed::new(self)
+        TxtVariationWriter::new(self)
     }
 }
 
-pub struct TxtVariationSealed {
+pub struct TxtVariationWriter {
     inner: TxtVariation,
     ratio: u8,
 }
 
-impl TxtVariationSealed {
+impl TxtVariationWriter {
     pub fn new(inner: TxtVariation) -> Self {
         let s3 = inner.s3;
         let real_s3 = inner.variation_amount();
@@ -146,7 +146,7 @@ impl TxtVariationSealed {
     }
 }
 
-impl S3WriterInfo for TxtVariationSealed {
+impl S3WriterInfo for TxtVariationWriter {
     fn bits_once(&self) -> u8 {
         (self.s3_once().ilog2() + 1) as u8
     }
@@ -156,7 +156,7 @@ impl S3WriterInfo for TxtVariationSealed {
     }
 }
 
-impl<W: WriteExt, Rng: RngMinimal> S3WriterRand<W, Rng> for TxtVariationSealed {
+impl<W: WriteExt, Rng: RngMinimal> S3WriterRand<W, Rng> for TxtVariationWriter {
     type Error = std::io::Error;
 
     /// # Panics

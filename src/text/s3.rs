@@ -78,6 +78,11 @@ pub trait RngMinimal {
     fn r64(&mut self) -> u64;
 
     fn r8_range(&mut self, range: std::ops::RangeInclusive<u8>) -> u8;
+    
+    /// Return random value in '0'..='9'
+    fn r_char_num(&mut self) -> char {
+        (self.r8_range(0..=9) + b'0') as char
+    }
 }
 
 impl RngMinimal for rand::rngs::ThreadRng {
