@@ -223,7 +223,6 @@ impl<W: WriteExt, Rng: RngMinimal> S3WriterRand<W, Rng> for S3FloatPriceWriter {
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-
 #[cfg(test)]
 mod tests {
     use crate::text::str_writer::WriterFmt;

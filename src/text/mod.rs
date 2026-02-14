@@ -11,6 +11,7 @@ pub mod s3;
 pub mod num;
 pub mod time;
 pub mod price;
+pub mod txt_enum;
 
 pub mod str_writer;
 

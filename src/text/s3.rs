@@ -3,6 +3,8 @@
 // * 3 bits have S3 = 8
 // * HM: [00:00 ..= 23:59] have S3 = 24 * 60 = 1440
 
+use rand::{Rng, RngCore};
+
 pub trait S3WriterInfo {
     /// How many bits are needed to write once?
     fn bits_once(&self) -> u8;
@@ -76,6 +78,20 @@ pub trait RngMinimal {
     fn r64(&mut self) -> u64;
 
     fn r8_range(&mut self, range: std::ops::RangeInclusive<u8>) -> u8;
+}
+
+impl RngMinimal for rand::rngs::ThreadRng {
+    fn r8(&mut self) -> u8 {
+        self.next_u32() as u8
+    }
+
+    fn r64(&mut self) -> u64 {
+        self.next_u64()
+    }
+
+    fn r8_range(&mut self, range: std::ops::RangeInclusive<u8>) -> u8 {
+        self.random_range(range)
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
