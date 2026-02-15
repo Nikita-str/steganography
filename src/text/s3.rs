@@ -4,6 +4,8 @@
 // * HM: [00:00 ..= 23:59] have S3 = 24 * 60 = 1440
 
 use rand::{Rng, RngCore};
+use std::{io::Read as ReadIO, u64};
+use crate::text::str_writer::WriteExt;
 
 pub trait S3WriterInfo {
     /// How many bits are needed to write once?
@@ -47,6 +49,13 @@ pub trait S3WriterRand<W, Rng>: S3WriterInfo {
     }
 
     fn write(&mut self, x: u64, w: &mut W, rng: &mut Rng) -> Result<(), Self::Error>;
+
+    fn write_fake(&mut self, w: &mut W, rng: &mut Rng) -> Result<(), Self::Error>
+    where Rng: RngMinimal
+    {
+        let x = rng.r64_range_excl(0..self.s3_once());
+        self.write(x , w, rng)
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -77,8 +86,9 @@ pub trait RngMinimal {
     fn r8(&mut self) -> u8;
     fn r64(&mut self) -> u64;
 
-    fn r8_range(&mut self, range: std::ops::RangeInclusive<u8>) -> u8;
-    
+    fn r8_range(&mut self, range: std::ops::RangeInclusive<u8>) -> u8;    
+    fn r64_range_excl(&mut self, range: std::ops::Range<u64>) -> u64;
+
     /// Return random value in '0'..='9'
     fn r_char_num(&mut self) -> char {
         (self.r8_range(0..=9) + b'0') as char
@@ -97,6 +107,10 @@ impl RngMinimal for rand::rngs::ThreadRng {
     fn r8_range(&mut self, range: std::ops::RangeInclusive<u8>) -> u8 {
         self.random_range(range)
     }
+    
+    fn r64_range_excl(&mut self, range: std::ops::Range<u64>) -> u64 {
+        self.random_range(range)
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -111,7 +125,7 @@ pub struct S3BitReader {
 }
 
 impl S3BitReader {
-    pub fn new<R: std::io::Read, Rng: RngMinimal>(&mut self, r: &mut R, rng: &mut Rng) -> Result<Self, std::io::Error> {
+    pub fn new<R: ReadIO, Rng: RngMinimal>(r: &mut R, rng: &mut Rng) -> Result<Self, std::io::Error> {
         Ok(Self {
             buf: S3BitBufReader::new(r)?,
             rng_buf: RngBuf::new(rng),
@@ -176,19 +190,19 @@ impl S3BitReader {
         }
     }
 
-    pub fn fill_buf<R: std::io::Read>(&mut self, r: &mut R) -> Result<(), std::io::Error> {
+    pub fn fill_buf<R: ReadIO + ?Sized>(&mut self, r: &mut R) -> Result<(), std::io::Error> {
         self.buf.fill(r)
     }
 
-    pub fn fill_rng<R: RngMinimal>(&mut self, rng: &mut R) {
+    pub fn fill_rng<R: RngMinimal + ?Sized>(&mut self, rng: &mut R) {
         self.rng_buf.fill(rng)
     }
        
-    pub fn fill(&mut self, chunk_sz: u8) {
+    pub fn fill(&mut self, chunk_sz: u8) -> bool {
         debug_assert!(chunk_sz <= 64);
 
         if self.max_written_value != 0 {
-            return
+            return false
         }
 
         let (bits, real_sz) = self.buf.try_take_bits(chunk_sz);
@@ -196,14 +210,167 @@ impl S3BitReader {
             assert!(self.buf.is_reader_eof(), "seems like you forget to fill readder buffer");
             if real_sz == 0 {
                 self.eof_stream = true;
+                return false
             }
         }
 
         self.bits_to_write = bits;
         self.total_bits_to_write = chunk_sz;
         self.max_written_value = 1;
+        true
     }
 }
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+mod s3_type_writer {
+    use crate::text::id::IdWriter;
+    use crate::text::num::{S3NumsWriter, S3RevNumsWriter};
+    use crate::text::price::{S3FloatPriceWriter, S3IntPriceWriter};
+    use crate::text::s3::{RngMinimal, S3WriterInfo, S3WriterRand};
+    use crate::text::str_writer::WriteExt;
+    use crate::text::time::S3TimeWriter;
+
+    use crate::text::s3::S3WriterRandWrap as WrapR;
+
+    pub enum S3TypeWriter<W, R> {
+        Time(WrapR<S3TimeWriter>),
+        IntPrice(S3IntPriceWriter),
+        FloatPrice(S3FloatPriceWriter),
+        Id(IdWriter),
+        IntNumRev(WrapR<S3RevNumsWriter>),
+        IntNum(WrapR<S3NumsWriter>),
+        Dyn(Box<dyn S3WriterRand<W, R, Error = std::io::Error>>),
+    }
+
+    macro_rules! sub_call_impl {
+        ($self:ident [$($var:ident),+] => $x:ident $call_expr:expr ) => {
+            match $self {
+                $(
+                    S3TypeWriter::$var($x) => $call_expr
+                ),+
+            }
+        };
+
+        ($self:ident $fn_name:ident ($($arg_name:ident),*) ) => {
+            sub_call_impl!($self [Time, IntPrice, FloatPrice, Id, IntNumRev, IntNum, Dyn] => x x.$fn_name($($arg_name),*) )
+        };
+
+        ($self:ident $fn_name:ident) => {
+            sub_call_impl!($self [Time, IntPrice, FloatPrice, Id, IntNumRev, IntNum, Dyn] $fn_name)
+        };
+    }
+
+    impl<W: WriteExt, Rng: RngMinimal> S3WriterInfo for S3TypeWriter<W, Rng> {
+        fn bits_once(&self) -> u8 {
+            sub_call_impl!(self bits_once())
+        }
+
+        fn s3_once(&self) -> u64 {
+            sub_call_impl!(self s3_once())
+        }
+    }
+
+    impl<W: WriteExt, Rng: RngMinimal> S3WriterRand<W, Rng> for S3TypeWriter<W, Rng> {
+        type Error = std::io::Error;
+
+        fn write(&mut self, x: u64, w: &mut W, rng: &mut Rng) -> Result<(), Self::Error> {
+            sub_call_impl!(self write(x, w, rng))
+        }
+    }
+}
+pub use s3_type_writer::S3TypeWriter;
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub trait S3ChunkWriter {
+
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub struct S3Full<'x, R: ?Sized, W: ?Sized, Rng: ?Sized> {
+    r: &'x mut R,
+    w: &'x mut W,
+    rng: &'x mut Rng,
+    bit_r: S3BitReader,
+    chunk_sz: Option<u8>,
+}
+
+#[must_use]
+pub struct S3FillResult {
+    pub eof_stream: bool,
+    pub need_chunk: bool,
+}
+
+impl<'x, R: ReadIO, W: WriteExt, Rng: RngMinimal> S3Full<'x, R, W, Rng> {
+    pub fn new(r: &'x mut R, w: &'x mut W, rng: &'x mut Rng) -> Result<Self, std::io::Error> {
+        Ok(Self {
+            bit_r: S3BitReader::new(r, rng)?,
+            r,
+            w,
+            rng,
+            chunk_sz: None,
+        })
+    }
+
+    #[inline(always)]
+    pub fn writer_mut(&mut self) -> &mut W {
+        self.w
+    }
+
+    #[inline(always)]
+    pub fn is_eof_stream(&self) -> bool {
+        self.bit_r.is_eof()
+    }
+
+    #[inline(always)]
+    pub fn is_need_chunk(&self) -> bool {
+        self.chunk_sz.is_none()
+    }
+
+    /// # Panics
+    /// * if `self.is_need_chunk()`
+    #[inline(always)]
+    pub fn set_next_chunk(&mut self, chunk_sz: u8) {
+        assert!(self.is_need_chunk());
+        self.chunk_sz = Some(chunk_sz)
+    }
+
+    pub fn write_s3<S3W>(&mut self, s3w: &mut S3W, fake: bool) -> Result<bool, std::io::Error>
+    where S3W: S3WriterRand<W, Rng, Error = std::io::Error> + ?Sized
+    {
+        self.bit_r.fill_buf(self.r)?;
+        self.bit_r.fill_rng(self.rng);
+        
+        if let Some(chunk_sz) = self.chunk_sz {
+            if self.bit_r.fill(chunk_sz) {
+                self.chunk_sz = None;
+            }
+        } else {
+            // if !self.bit_r.is_eof() {
+            //     return Err(std::io::Error::other("You cannot fill while chunk is needed!"));
+            // }
+        }
+
+        if self.bit_r.is_eof() {
+            s3w.write_fake(self.w, self.rng)?;
+            return Ok(true)
+        }
+        
+        if fake {
+            s3w.write_fake(self.w, self.rng)?;
+        } else {
+            let was_written = s3w.write_full(&mut self.bit_r, self.w, self.rng)?;
+            debug_assert!(was_written);
+        }
+
+        Ok(false)
+    }
+}
+
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[derive(Debug)]
 pub struct RngBuf {
@@ -220,7 +387,7 @@ impl RngBuf {
     }
     
     #[inline]
-    pub fn fill<R: RngMinimal>(&mut self, rng: &mut R) {
+    pub fn fill<R: RngMinimal + ?Sized>(&mut self, rng: &mut R) {
         if self.buf.bit_rest >= S3BitBuf::HALF_SIZE {
             return
         }
@@ -282,7 +449,7 @@ impl S3BitBufReader {
     }
 
     #[inline]
-    pub fn fill<R: std::io::Read>(&mut self, r: &mut R) -> Result<(), std::io::Error> {
+    pub fn fill<R: std::io::Read + ?Sized>(&mut self, r: &mut R) -> Result<(), std::io::Error> {
         if self.reader_eof {
             return Ok(())
         }

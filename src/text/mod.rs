@@ -18,7 +18,7 @@ pub mod txt_enum;
 pub mod str_writer;
 
 // TODO: code (rust, python)
-// pub mod csv;
+pub mod csv;
 
 // TODO: exchange [a -> o; i -> e;]
 // TODO: chunked repeat wo key (count amount of repeatness in chunk % 2)

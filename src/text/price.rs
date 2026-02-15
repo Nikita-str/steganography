@@ -254,6 +254,10 @@ mod tests {
         fn r8_range(&mut self, _: std::ops::RangeInclusive<u8>) -> u8 {
             self.range_res.pop().unwrap()
         }
+
+        fn r64_range_excl(&mut self, _: std::ops::Range<u64>) -> u64 {
+            unimplemented!()
+        }
     }
 
     #[test]
