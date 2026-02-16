@@ -193,6 +193,7 @@ impl<R: std::io::Read> ReadWraper<R> {
 
         let capacity = self.buf_capacity();
         let mut need_read = capacity - self.buf_len();
+        let mut readed_once = false;
         
         let mut from;
         let mut to;
@@ -211,17 +212,18 @@ impl<R: std::io::Read> ReadWraper<R> {
             need_change_from_to = false;
         }
 
-        
         loop {
             if need_read == 0 {
                 break
             }
 
             let readed = self.r.read(&mut self.buf[from..to])?;
-            if readed == 0 {
+            let is_eof = readed == 0;
+            if is_eof {
                 self.is_r_eof = true;
                 break
             }
+            readed_once |= !is_eof;
             need_read -= readed;
 
             from += readed;
@@ -239,21 +241,28 @@ impl<R: std::io::Read> ReadWraper<R> {
         if self.i_end != capacity {
             self.i_end %= capacity;
         }
-        self.is_buf_empty = self.is_buf_empty && from == to;
+        self.is_buf_empty &= !readed_once;
 
         Ok(())
+    }
+
+    fn upd_bounds(&mut self) {
+        let is_empty = self.i_start == self.i_end;
+        if is_empty {
+            self.is_buf_empty = true;
+            self.i_start = 0;
+            self.i_end = 0;
+        }
+        if self.i_start == self.buf_capacity() {
+            self.i_start = 0;
+        }
     }
 
     fn read_byte_unchecked(&mut self) -> u8 {
         let x = self.buf[self.i_start];
 
         self.i_start += 1;
-        if self.i_start == self.i_end {
-            self.is_buf_empty = true;
-        }
-        if self.i_start == self.buf_capacity() {
-            self.i_start = 0;   
-        }
+        self.upd_bounds();
 
         x
     }
@@ -288,16 +297,55 @@ impl<R: std::io::Read> PeakableReadExt for ReadWraper<R> {
     }
 }
 
+
+impl<R: std::io::Read> std::io::Read for ReadWraper<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut readed = 0;
+
+        loop {
+            if buf.len() == readed {
+                break
+            }
+
+            if self.is_buf_empty() {
+                self.fill_buf()?;
+            }
+            if self.is_eof() {
+                break
+            }
+            
+            let from = self.i_start;
+            let len;
+            if self.i_start < self.i_end {
+                len = (buf.len() - readed).min(self.i_end - self.i_start);
+            } else {
+                len = (buf.len() - readed).min(self.buf_capacity() - self.i_start);
+            }
+
+            let sub_buf = &mut buf[readed..readed + len];
+            sub_buf.copy_from_slice(&self.buf[from..from + len]);
+
+            debug_assert!(len != 0);
+            self.i_start += len;
+            readed += len;
+            
+            if readed > 20 { panic!() }
+            self.upd_bounds();
+        }
+            
+        Ok(readed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    // use std::io::Read;
+    use std::io::Read;
     use super::*;
 
     #[test]
     fn test_read() {
         let v = vec![11u8, 21u8, 31, 41, 51, 61, 71, 81, 91, 12, 13];
         let mut r = ReadWraper::with_capacity(v.as_slice(), 4);
-        println!("{:?}", &r.buf);
         assert!(!r.is_eof());
         assert_eq!(r.peak_byte(1).unwrap(), Some(21));
         assert_eq!(r.peak_byte(0).unwrap(), Some(11));
@@ -326,6 +374,28 @@ mod tests {
         assert_eq!(r.try_read_byte().unwrap(), Some(13));
         assert!(r.is_eof());
         assert_eq!(r.try_read_byte().unwrap(), None);
-        println!("{:?}", &r.buf);
+        
+        for i in 0..7 {
+            let mut r = ReadWraper::with_capacity(v.as_slice(), 4);
+            let mut vv = vec![];
+            for _ in 0..=i {
+                vv.push(r.read_byte().unwrap());
+            }
+            r.read_to_end(&mut vv).unwrap();
+            assert_eq!(vv.as_slice(), v.as_slice());
+        }
+          
+        for i in 0..7 {
+            let mut r = ReadWraper::with_capacity(v.as_slice(), 4);
+            let mut vv = vec![];
+            for _ in 0..=i {
+                vv.push(r.read_byte().unwrap());
+                let _ = r.peak_byte(3).unwrap();
+            }
+            r.read_to_end(&mut vv).unwrap();
+            assert_eq!(vv.as_slice(), v.as_slice());
+        }
+
+        //TODO: rand test (for both: std::io::Read on Wrap & for PeakableReadExt)
     }
 }
