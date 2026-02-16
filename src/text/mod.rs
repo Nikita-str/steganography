@@ -16,6 +16,7 @@ pub mod txt_enum;
 // TODO: mail (especially temp mails -- the existence of a mail in tmp-mail domains is stored for a short time)
 
 pub mod str_writer;
+pub mod str_reader;
 
 // TODO: code (rust, python)
 pub mod csv;
