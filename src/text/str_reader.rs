@@ -1,6 +1,12 @@
 
 pub type Result<T> = std::io::Result<T>;
 
+#[inline(always)]
+fn convert_bytes_to_char(bytes: &[u8]) -> std::io::Result<char> {
+    let s = str::from_utf8(bytes).map_err(|_|std::io::Error::other("Invalid UTF-8 char seq"))?;
+    s.chars().next().ok_or_else(||std::io::Error::other("Empty string?!")) 
+}
+
 pub trait PeakableReadExt {
     fn is_eof(&mut self) -> Result<bool>;
     fn read_byte(&mut self) -> Result<u8>;
@@ -42,31 +48,58 @@ pub trait PeakableReadExt {
         }
     }
 
+    fn peak_char(&mut self) -> std::io::Result<Option<char>> {
+        macro_rules! peak_b {
+            ($peak_n:literal) => {
+                if let Some(b) = self.peak_byte($peak_n)? {
+                    b
+                } else {
+                    return Ok(None)
+                }       
+            };
+        }
+        let b1 = peak_b!(0);
+
+        match b1.leading_ones() {
+            0 => Ok(Some(b1 as char)),
+            2 => {
+                let b2 = peak_b!(1);
+                convert_bytes_to_char(&[b1, b2]).map(|x|Some(x))
+            }
+            3 => {
+                let b2 = peak_b!(1);
+                let b3 = peak_b!(2);
+                convert_bytes_to_char(&[b1, b2, b3]).map(|x|Some(x))
+            }
+            4 => {
+                let b2 = peak_b!(1);
+                let b3 = peak_b!(2);
+                let b4 = peak_b!(3);
+                convert_bytes_to_char(&[b1, b2, b3, b4]).map(|x|Some(x))
+            }
+            _ => Err(std::io::Error::other("Invalid UTF-8 char seq")),
+        }
+    }
+
     fn read_char(&mut self) -> std::io::Result<char> {
         let b1 = self.read_byte()?;
-
-        #[inline(always)]
-        fn convert(bytes: &[u8]) -> std::io::Result<char> {
-            let s = str::from_utf8(bytes).map_err(|_|std::io::Error::other("Invalid UTF-8 char seq"))?;
-            s.chars().next().ok_or_else(||std::io::Error::other("Empty string?!")) 
-        }
 
         match b1.leading_ones() {
             0 => Ok(b1 as char),
             2 => {
                 let b2 = self.read_byte()?;
-                convert(&[b1, b2])
+                convert_bytes_to_char(&[b1, b2])
             }
             3 => {
                 let b2 = self.read_byte()?;
                 let b3 = self.read_byte()?;
-                convert(&[b1, b2, b3])
+                convert_bytes_to_char(&[b1, b2, b3])
             }
             4 => {
                 let b2 = self.read_byte()?;
                 let b3 = self.read_byte()?;
                 let b4 = self.read_byte()?;
-                convert(&[b1, b2, b3, b4])
+                convert_bytes_to_char(&[b1, b2, b3, b4])
             }
             _ => Err(std::io::Error::other("Invalid UTF-8 char seq")),
         }
@@ -81,15 +114,62 @@ pub trait PeakableReadExt {
     
     fn read_str_until_char(&mut self, str: &mut String, unitl_char: char) -> std::io::Result<()> {
         loop {
-            if self.test_next_char(unitl_char)? {
-                break
-            }
             if self.is_eof()? {
                 break 
+            }
+            if self.test_next_char(unitl_char)? {
+                break
             }
             str.push(self.read_char()?);
         }
         Ok(())
+    }
+    
+    /// # Returns
+    /// `Option<next_char>`
+    fn read_str_until_char_ext(&mut self, str: &mut String, unitl_char: char) -> std::io::Result<Option<char>> {
+        loop {
+            if self.is_eof()? {
+                return Ok(None)
+            }
+            let ch = self.read_char()?;
+            if ch == unitl_char {
+                return Ok(Some(unitl_char));
+            }
+            str.push(ch);
+        }
+    }
+    
+    fn read_str_while(&mut self, str: &mut String, mut while_f: impl FnMut(char) -> bool) -> std::io::Result<()> {
+        loop {
+            if self.is_eof()? {
+                break 
+            }
+            match self.peak_char()? {
+                Some(ch) if while_f(ch) => {
+                    let rch = self.read_char()?;
+                    debug_assert_eq!(ch, rch);
+                    str.push(rch);
+                }
+                _ => return Ok(())
+            }
+        }
+        Ok(())
+    }
+    
+    fn read_str_while_ext(&mut self, str: &mut String, mut while_f: impl FnMut(char) -> bool) -> std::io::Result<Option<char>> {
+        loop {
+            if self.is_eof()? {
+                return Ok(None)
+            }
+            match self.try_read_char()? {
+                Some(ch) if while_f(ch) => {
+                    str.push(ch);
+                }
+                Some(ch) => return Ok(Some(ch)),
+                None => return Ok(None),
+            }
+        }
     }
 }
 
@@ -265,6 +345,70 @@ impl<R: std::io::Read> ReadWraper<R> {
         self.upd_bounds();
 
         x
+    }
+}
+
+pub struct StrReadWraper<R> {
+    r_wrap: ReadWraper<R>,
+    str_buf: String,
+}
+impl<R: std::io::Read> StrReadWraper<R> {
+    pub fn new_std(r: R) -> Self {
+        Self {
+            r_wrap: ReadWraper::new_std(r),
+            str_buf: String::with_capacity(256),
+        }
+    }
+
+    pub fn with_capacity(r: R, capacity: usize) -> Self {
+        Self {
+            r_wrap: ReadWraper::with_capacity(r, capacity),
+            str_buf: String::with_capacity(256),
+        }
+    }
+    
+    #[inline(always)]
+    pub fn str_buf_is_empty(&self) -> bool {
+        self.str_buf.is_empty()
+    }
+
+    #[inline(always)]
+    fn str_buf_empty_test(&mut self, clear: bool) {
+        if !self.str_buf_is_empty() && !clear {
+            panic!("`str_buf` is not empty!")
+        } else if !self.str_buf_is_empty() {
+            self.str_buf.clear();
+        }
+    }
+
+    /// # Panics
+    /// * if `!self.str_buf_is_empty()` (you will lose data)
+    pub fn into_wrap(mut self) -> ReadWraper<R> {
+        self.str_buf_empty_test(false);
+        self.r_wrap
+    }
+
+    pub fn str_buf(&self) -> &str {
+        &self.str_buf
+    }
+    
+    pub fn str_buf_mut(&mut self) -> &mut str {
+        &mut self.str_buf
+    }
+    
+    pub fn clear_str_buf(&mut self) {
+        self.str_buf.clear();
+    }
+
+    pub fn read_while_not_ignore(&mut self, not_ch: char, clear: bool) -> Result<&mut str> {
+        self.str_buf_empty_test(clear);
+
+        let r = self.r_wrap.read_str_while_ext(&mut self.str_buf, |ch|ch != not_ch)?;
+        if r != Some(not_ch) {
+            return Err(std::io::Error::other(format!("Expected Some({not_ch}) but was {r:?}")));
+        }
+        
+        Ok(&mut self.str_buf)
     }
 }
 

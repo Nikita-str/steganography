@@ -19,7 +19,7 @@ pub trait S3Writer<W>: S3WriterInfo {
     type Error;
 
     /// # Return
-    /// * Was something write?
+    /// * Was something written?
     fn write_full(&mut self, reader: &mut S3BitReader, w: &mut W) -> Result<bool, Self::Error> {
         if reader.need_fill() {
             Ok(false)
@@ -37,7 +37,7 @@ pub trait S3WriterRand<W, Rng>: S3WriterInfo {
     type Error;
 
     /// # Return
-    /// * Was something write?
+    /// * Was something written?
     fn write_full(&mut self, reader: &mut S3BitReader, w: &mut W, rng: &mut Rng) -> Result<bool, Self::Error> {
         if reader.need_fill() {
             Ok(false)
