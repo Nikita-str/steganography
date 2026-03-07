@@ -113,6 +113,10 @@ impl<W: std::fmt::Write> WriterFmt<W> {
     pub fn new(w: W) -> Self {
         Self { w }
     }
+
+    pub fn take_inner(self) -> W {
+        self.w
+    }
 }
 
 impl<W: std::fmt::Write> AsRef<W> for WriterFmt<W> {

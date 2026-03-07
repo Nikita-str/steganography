@@ -1,6 +1,7 @@
 use std::f32::consts::LOG2_10;
 
-use crate::text::s3::{S3Writer, S3WriterInfo};
+use crate::text::s3::{S3Reader, S3Writer, S3WriterInfo};
+use crate::text::str_reader::{PeakableReadExt, StrReadWraper};
 use crate::text::str_writer::WriteExt;
 
 pub struct Num10ToBits {
@@ -266,6 +267,108 @@ impl<W: WriteExt> S3Writer<W> for S3NumsWriter {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct S3NumsReader {
+    s3_once: u64,
+    len: u8,
+    is_reverse: bool,
+    is_zeroed: bool,
+}
+
+impl S3NumsReader {
+    #[inline(always)]
+    pub fn new(num_len: u8, is_reverse: bool, is_zeroed: bool) -> Self {
+        debug_assert!(0 < num_len && num_len < 19);
+        Self {
+            s3_once: 10u64.pow(num_len as u32),
+            len: num_len,
+            is_reverse,
+            is_zeroed,
+        }
+    }
+}
+
+impl S3WriterInfo for S3NumsReader {
+    fn bits_once(&self) -> u8 {
+        (self.s3_once.ilog2() + 1) as u8
+    }
+
+    fn s3_once(&self) -> u64 {
+        self.s3_once
+    }
+}
+
+impl<R: PeakableReadExt> S3Reader<R> for S3NumsReader {
+    type Error = std::io::Error;
+
+    fn read(&mut self, r: &mut R) -> Result<u64, Self::Error> {
+        let mut once = false;
+        let mut ret = 0u64;
+        let mut shift = 1;
+        let mut cur_len = self.len;
+        loop {
+            let c = r.peak_char()?;
+            match c {
+                Some('0'..='9') => {
+                    debug_assert!(r.read_char().ok() == c);
+                    once = true;
+                    let num = (c.unwrap() as u8 - b'0') as u64;
+                    if self.is_reverse {
+                        ret = num * shift + ret;
+                        shift *= 10;
+                    } else {
+                        ret = ret * 10 + num;
+                    }
+                    cur_len -= 1;
+                    if cur_len == 0 {
+                        return Ok(ret);
+                    }
+                }
+                Some(_) | None if !once => return Err(std::io::Error::other("S3NumsReader: empty number")),
+                Some(_) | None => {
+                    if self.is_reverse && !self.is_zeroed { ret *= 10u64.pow(cur_len as u32) }
+                    return Ok(ret)
+                }
+            }
+        }
+    }
+}
+
+impl<R: std::io::Read> S3Reader<StrReadWraper<R>> for S3NumsReader {
+    type Error = std::io::Error;
+
+    fn read(&mut self, r: &mut StrReadWraper<R>) -> Result<u64, Self::Error> {
+        let mut cur_len = self.len;
+        let str = r.read_while(|c| {
+            if cur_len == 0 { false }
+            else {
+                cur_len -= 1;
+                '0' <= c && c <= '9'
+            }
+        }, true)?;
+
+        if str.is_empty() {
+            return Err(std::io::Error::other("S3NumsReader: empty number"))
+        }
+
+        let mut shift = 1;
+        let mut ret = 0u64;
+        for x in str.chars().map(|c|c as u8 - b'0') {
+            let num = x as u64;
+            if self.is_reverse {
+                ret = num * shift + ret;
+                shift *= 10;
+            } else {
+                ret = ret * 10 + num;
+            }
+        }
+        
+        if self.is_reverse && !self.is_zeroed { ret *= 10u64.pow(cur_len as u32) }
+
+        Ok(ret)
+    }
+}
+
 // ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━
 
 #[derive(Clone, Copy)]
@@ -342,8 +445,37 @@ impl<W: WriteExt> S3Writer<W> for S3RevNumsWriter {
 #[cfg(test)]
 mod tests {
     use crate::text::str_writer::WriterFmt;
+    use crate::text::str_reader::ReadWraper;
 
     use super::*;
+
+    #[test]
+    fn test_num_s3_write_read() {
+        let nums = vec![
+            0, 1, 2, 6, 12, 32, 568, 1234, 2345, 4567, 20, 600, 1020, 120,
+        ];
+
+        // let num = 0b_010_1010_1101;
+        for num in nums {
+            let mut w = S3RevNumsWriter::new(4, false);
+            
+            let str = String::with_capacity(10);
+            let mut str = WriterFmt::new(str);
+            
+            str.clear();
+            w.write(num, &mut str).unwrap();
+            
+            let w = str.take_inner();
+            
+            let mut str_r = ReadWraper::new_std(w.as_bytes());
+            let mut r = S3NumsReader::new(4, true, false);
+            assert_eq!(Some(num), r.read(&mut str_r).ok());
+            
+            let mut str_r = StrReadWraper::new_std(w.as_bytes()); 
+            let mut r = S3NumsReader::new(4, true, false);
+            assert_eq!(Some(num), r.read(&mut str_r).ok());
+        }
+    }
 
     #[test]
     fn test_num_conv() {

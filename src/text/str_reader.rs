@@ -410,6 +410,14 @@ impl<R: std::io::Read> StrReadWraper<R> {
         
         Ok(&mut self.str_buf)
     }
+    
+    pub fn read_while(&mut self, while_f: impl FnMut(char) -> bool, clear: bool) -> Result<&mut str> {
+        self.str_buf_empty_test(clear);
+
+        self.r_wrap.read_str_while(&mut self.str_buf, while_f)?;
+        
+        Ok(&mut self.str_buf)
+    }
 }
 
 impl<R: std::io::Read> PeakableReadExt for ReadWraper<R> {

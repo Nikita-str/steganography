@@ -155,6 +155,8 @@ impl S3BitReader {
             panic!("S3BitReader: Need fill! (call `fill` & test if by `need_fill`)")
         }
 
+        //TODO: test `after_bit_len` with s3 = [3, 7] & with s3 = [2, 2, 2] & with s3 = [4, 4]
+        //MAYBE: there needed `written_after - 1`
         let after_bit_len;
         if let Some(written_after) = self.max_written_value.checked_mul(s3) {
             after_bit_len = 64 - written_after.leading_zeros() as u8;
@@ -369,7 +371,6 @@ impl<'x, R: ReadIO, W: WriteExt, Rng: RngMinimal> S3Full<'x, R, W, Rng> {
     }
 }
 
-
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[derive(Debug)]
@@ -507,6 +508,12 @@ impl S3BitBuf {
     const MASK: u64 = !0;
 
     #[inline]
+    pub fn fill_trimed(&mut self, bits: u64, n: u8) {
+        let bits = bits & (Self::MASK >> (64 - n));
+        self.fill(bits, n);
+    }
+
+    #[inline]
     pub fn fill(&mut self, bits: u64, n: u8) {
         if Self::FULL_SIZE < self.bit_rest + n {
             return
@@ -554,6 +561,141 @@ impl S3BitBuf {
         ret
     }
 }
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  ━━━   ━━━   ━━━   ━━━   ━━━   ━━━   ━━━   ━━━   ━━━   ━━━   ━━━   ━━━   ━━━
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub trait S3Reader<R>: S3WriterInfo {
+    type Error;
+
+    /// # Return
+    /// * Was something read?
+    fn read_full(&mut self, writer: &mut S3BitWriter, r: &mut R) -> Result<bool, Self::Error> {
+        if writer.need_fill() {
+            Ok(false)
+        } else {
+            let s3 = self.s3_once();
+            let s3_value = self.read(r)?;
+            writer.write_s3(s3_value, s3);
+            Ok(true)
+        }
+    }
+
+    fn read(&mut self, r: &mut R) -> Result<u64, Self::Error>;
+
+    fn read_fake(&mut self, r: &mut R) -> Result<(), Self::Error> {
+        self.read(r)?;
+        Ok(())
+    }
+}
+
+pub struct S3BitWriter {
+    buf: S3BitBuf,
+    bits_read: u64,
+    max_read_value: u64,
+    chunk_sz: u8,
+    is_eof: bool,
+}
+
+impl S3BitWriter {
+    pub fn new() -> Self {
+        Self {
+            buf: S3BitBuf {
+                lower_bits: 0,
+                upper_bits: 0,
+                bit_rest: 0,
+            },
+            bits_read: 0,
+            max_read_value: 0,
+            chunk_sz: 0,
+            is_eof: false,
+        }
+    }    
+
+    pub fn need_fill(&self) -> bool {
+        self.max_read_value == 0
+    }
+    
+    pub fn is_eof(&self) -> bool {
+        self.is_eof
+    }
+
+    /// # Panic
+    /// * if `self.need_fill()`
+    pub fn write_s3(&mut self, s3_value: u64, s3: u64) {
+        if self.need_fill() {
+            panic!("S3BitWriter: Need fill! (call `fill` & test if by `need_fill`)")
+        }
+
+        self.bits_read += self.max_read_value * s3_value;
+
+        let after_bit_len;
+        if let Some(read_after) = self.max_read_value.checked_mul(s3) {
+            after_bit_len = 64 - read_after.leading_zeros() as u8;
+            self.max_read_value = read_after;
+        } else {
+            after_bit_len = 65;
+        }
+
+        //TODO: test `<` with s3 = [3, 7] & with s3 = [2, 2, 2] & with s3 = [4, 4]
+        if self.chunk_sz < after_bit_len {
+            self.buf.fill_trimed(self.bits_read, self.chunk_sz);
+            self.max_read_value = 0;
+            self.bits_read = 0;
+            self.chunk_sz = 0;
+        }
+    }
+
+    pub fn set_chunk_size(&mut self, chunk_sz: u8) -> bool {
+        debug_assert!(chunk_sz <= 64);
+
+        if !self.need_fill() {
+            return false
+        }
+
+        self.bits_read = 0;
+        self.max_read_value = 1;
+        self.chunk_sz = chunk_sz;
+        true
+    }
+
+    #[inline(always)]
+    pub fn has_chunk(&self) -> bool {
+        !self.is_eof && self.buf.bit_rest >= 64
+    }
+    
+    #[inline(always)]
+    pub fn try_take_chunk(&mut self) -> Option<u64> {
+        self.has_chunk().then(||self.buf.take_bits(64))
+    }
+    
+    /// # Paincs
+    /// * if `self.has_chunk()` 
+    /// # Returns
+    /// `(rest_bits, amount_of_bits)`
+    pub fn take_on_eof(&mut self) -> (u64, u8) {
+        let rest = self.buf.bit_rest;
+        let is_eof = self.is_eof;
+        self.is_eof = true;
+        
+        if is_eof || rest == 0 {
+            return (0, 0);
+        }
+
+        if rest > 64 {
+            panic!("You cannot `take_on_eof` when there still is a full chunk");
+        }
+        
+        if rest % 8 != 0 {
+            panic!("You cannot `take_on_eof` with not an integer number of bytes");
+        }
+
+        (self.buf.take_bits(rest), rest)
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[cfg(test)]
 mod tests {
