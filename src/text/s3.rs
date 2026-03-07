@@ -4,7 +4,10 @@
 // * HM: [00:00 ..= 23:59] have S3 = 24 * 60 = 1440
 
 use rand::{Rng, RngCore};
-use std::{io::Read as ReadIO, u64};
+use std::io::Read as ReadIO;
+use std::io::Write as WriteIO;
+use crate::text::str_reader::ReadWraper;
+use crate::text::str_reader::StrReadWraper;
 use crate::text::str_writer::WriteExt;
 
 pub trait S3WriterInfo {
@@ -43,6 +46,7 @@ pub trait S3WriterRand<W, Rng>: S3WriterInfo {
             Ok(false)
         } else {
             let bits = reader.take_bits_from_writer(self);
+            println!("w: {bits} (max: {})", self.s3_once());
             self.write(bits, w, rng)?;
             Ok(true)
         }
@@ -225,27 +229,28 @@ impl S3BitReader {
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-mod s3_type_writer {
-    use crate::text::id::IdWriter;
-    use crate::text::num::{S3NumsWriter, S3RevNumsWriter};
-    use crate::text::price::{S3FloatPriceWriter, S3IntPriceWriter};
-    use crate::text::s3::{RngMinimal, S3WriterInfo, S3WriterRand};
+mod s3_type_rw {
+    use crate::text::id::{IdReader, IdWriter};
+    use crate::text::num::{S3NumsReader, S3NumsWriter, S3RevNumsWriter};
+    use crate::text::price::{S3FloatPriceReader, S3FloatPriceWriter, S3IntPriceReader, S3IntPriceWriter};
+    use crate::text::s3::{RngMinimal, S3Reader, S3WriterInfo, S3WriterRand};
+    use crate::text::str_reader::StrReadWraper;
     use crate::text::str_writer::WriteExt;
     use crate::text::time::S3TimeRW;
 
     use crate::text::s3::S3WriterRandWrap as WrapR;
 
-    pub enum S3TypeWriter<W, R> {
+    pub enum S3TypeWriter<W, Rng> {
         Time(WrapR<S3TimeRW>),
         IntPrice(S3IntPriceWriter),
         FloatPrice(S3FloatPriceWriter),
         Id(IdWriter),
         IntNumRev(WrapR<S3RevNumsWriter>),
         IntNum(WrapR<S3NumsWriter>),
-        Dyn(Box<dyn S3WriterRand<W, R, Error = std::io::Error>>),
+        Dyn(Box<dyn S3WriterRand<W, Rng, Error = std::io::Error>>),
     }
 
-    macro_rules! sub_call_impl {
+    macro_rules! sub_call_impl_w {
         ($self:ident [$($var:ident),+] => $x:ident $call_expr:expr ) => {
             match $self {
                 $(
@@ -255,21 +260,21 @@ mod s3_type_writer {
         };
 
         ($self:ident $fn_name:ident ($($arg_name:ident),*) ) => {
-            sub_call_impl!($self [Time, IntPrice, FloatPrice, Id, IntNumRev, IntNum, Dyn] => x x.$fn_name($($arg_name),*) )
+            sub_call_impl_w!($self [Time, IntPrice, FloatPrice, Id, IntNumRev, IntNum, Dyn] => x x.$fn_name($($arg_name),*) )
         };
 
         ($self:ident $fn_name:ident) => {
-            sub_call_impl!($self [Time, IntPrice, FloatPrice, Id, IntNumRev, IntNum, Dyn] $fn_name)
+            sub_call_impl_w!($self [Time, IntPrice, FloatPrice, Id, IntNumRev, IntNum, Dyn] $fn_name)
         };
     }
 
     impl<W: WriteExt, Rng: RngMinimal> S3WriterInfo for S3TypeWriter<W, Rng> {
         fn bits_once(&self) -> u8 {
-            sub_call_impl!(self bits_once())
+            sub_call_impl_w!(self bits_once())
         }
 
         fn s3_once(&self) -> u64 {
-            sub_call_impl!(self s3_once())
+            sub_call_impl_w!(self s3_once())
         }
     }
 
@@ -277,11 +282,57 @@ mod s3_type_writer {
         type Error = std::io::Error;
 
         fn write(&mut self, x: u64, w: &mut W, rng: &mut Rng) -> Result<(), Self::Error> {
-            sub_call_impl!(self write(x, w, rng))
+            sub_call_impl_w!(self write(x, w, rng))
+        }
+    }
+
+    
+    pub enum S3TypeReader<R> {
+        Time(S3TimeRW),
+        IntPrice(S3IntPriceReader),
+        FloatPrice(S3FloatPriceReader),
+        Id(IdReader),
+        IntNum(S3NumsReader),
+        Dyn(Box<dyn S3Reader<StrReadWraper<R>, Error = std::io::Error>>),
+    }
+
+    macro_rules! sub_call_impl_r {
+        ($self:ident [$($var:ident),+] => $x:ident $call_expr:expr ) => {
+            match $self {
+                $(
+                    S3TypeReader::$var($x) => $call_expr
+                ),+
+            }
+        };
+
+        ($self:ident $fn_name:ident ($($arg_name:ident),*) ) => {
+            sub_call_impl_r!($self [Time, IntPrice, FloatPrice, Id, IntNum, Dyn] => x x.$fn_name($($arg_name),*) )
+        };
+
+        ($self:ident $fn_name:ident) => {
+            sub_call_impl_r!($self [Time, IntPrice, FloatPrice, Id, IntNum, Dyn] $fn_name)
+        };
+    }
+    
+    impl<R: std::io::Read> S3WriterInfo for S3TypeReader<R> {
+        fn bits_once(&self) -> u8 {
+            sub_call_impl_r!(self bits_once())
+        }
+
+        fn s3_once(&self) -> u64 {
+            sub_call_impl_r!(self s3_once())
+        }
+    }
+
+    impl<R: std::io::Read> S3Reader<StrReadWraper<R>> for S3TypeReader<R> {
+        type Error = std::io::Error;
+
+        fn read(&mut self, r: &mut StrReadWraper<R>) -> Result<u64, Self::Error> {
+            sub_call_impl_r!(self read(r))
         }
     }
 }
-pub use s3_type_writer::S3TypeWriter;
+pub use s3_type_rw::{S3TypeWriter, S3TypeReader};
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -577,6 +628,7 @@ pub trait S3Reader<R>: S3WriterInfo {
         } else {
             let s3 = self.s3_once();
             let s3_value = self.read(r)?;
+            println!("r: {s3_value} (max: {s3})");
             writer.write_s3(s3_value, s3);
             Ok(true)
         }
@@ -587,6 +639,105 @@ pub trait S3Reader<R>: S3WriterInfo {
     fn read_fake(&mut self, r: &mut R) -> Result<(), Self::Error> {
         self.read(r)?;
         Ok(())
+    }
+}
+
+pub struct S3FullReader<'x, R, W: ?Sized> {
+    r: &'x mut StrReadWraper<R>,
+    w: &'x mut W,
+    bit_w: S3BitWriter,
+    chunk_sz: Option<u8>,
+}
+
+impl<'x, R: ReadIO, W: WriteIO> S3FullReader<'x, R, W> {
+    pub fn new(r: &'x mut StrReadWraper<R>, w: &'x mut W) -> Self {
+        Self {
+            bit_w: S3BitWriter::new(),
+            r,
+            w,
+            chunk_sz: None,
+        }
+    }
+
+    #[inline(always)]
+    pub fn str_reader_mut(&mut self) -> &mut StrReadWraper<R> {
+        self.r
+    }
+
+    #[inline(always)]
+    pub fn reader_mut(&mut self) -> &mut ReadWraper<R> {
+        self.r.wrap_mut()
+    }
+
+    #[inline(always)]
+    pub fn is_eof_stream(&self) -> bool {
+        self.bit_w.is_eof()
+    }
+
+    #[inline(always)]
+    pub fn is_need_chunk(&self) -> bool {
+        self.chunk_sz.is_none()
+    }
+
+    /// # Panics
+    /// * if `self.is_need_chunk()`
+    #[inline(always)]
+    pub fn set_next_chunk(&mut self, chunk_sz: u8) {
+        assert!(self.is_need_chunk());
+        self.chunk_sz = Some(chunk_sz)
+    }
+
+    pub fn read_s3<S3R>(&mut self, s3r: &mut S3R, fake: bool) -> Result<bool, std::io::Error>
+    where S3R: S3Reader<StrReadWraper<R>, Error = std::io::Error> + ?Sized
+    {
+        if self.bit_w.is_eof() {
+            return Ok(true)
+        }
+
+        if let Some(chunk_sz) = self.chunk_sz {
+            if self.bit_w.set_chunk_size(chunk_sz) {
+                self.chunk_sz = None;
+            }
+        } else {
+            // if !self.bit_r.is_eof() {
+            //     return Err(std::io::Error::other("You cannot fill while chunk is needed!"));
+            // }
+        }
+        
+        let mut try_fill = false;
+        let mut is_eof = false;
+        if self.r.wrap_mut().peak(0)?.is_none() {
+            try_fill = true;
+            is_eof = true;
+        }
+
+        if !is_eof {
+            if fake {
+                s3r.read_fake(self.r)?;
+            } else {
+                let was_readed = s3r.read_full(&mut self.bit_w, self.r)?;
+                debug_assert!(was_readed);
+                try_fill = true;
+            }
+        }
+        
+        if try_fill && self.bit_w.has_chunk() {
+            if let Some(bytes) = self.bit_w.try_take_chunk() {
+                self.w.write_all(&bytes.to_le_bytes())?;
+            }
+        }
+
+        if is_eof || self.r.wrap_mut().is_eof() {
+            let (bytes, bits) = self.bit_w.take_on_eof();
+            
+            let bytes = &bytes.to_le_bytes() as &[u8];
+            let bytes = &bytes[..bits as usize / 8];
+            self.w.write_all(bytes)?;
+
+            return Ok(true)
+        }
+
+        Ok(false)
     }
 }
 

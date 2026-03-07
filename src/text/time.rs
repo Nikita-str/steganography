@@ -303,14 +303,17 @@ impl<R: PeakableReadExt> S3Reader<R> for S3TimeRW {
     
     fn read(&mut self, r: &mut R) -> Result<u64, Self::Error> {
         let h = r.read_n2z()? as u64;
+        r.read_char_expect(':', false)?;
         let m = r.read_n2z()? as u64;
         let mut ret = h * 60 + m;
 
         if self.fmt.has_sec() {
+            r.read_char_expect(':', false)?;
             let s = r.read_n2z()? as u64;
             ret = ret * 60 + s;
         }
         if self.fmt.has_ms() {
+            r.read_char_expect('.', false)?;
             let ms = r.read_n3z()? as u64;
             ret = ret * 1000 + ms;
         }

@@ -287,6 +287,7 @@ impl S3NumsReader {
         }
     }
 
+    #[inline(always)]
     pub fn len(&self) -> u8 {
         self.len
     }

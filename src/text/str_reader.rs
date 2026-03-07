@@ -81,6 +81,26 @@ pub trait PeakableReadExt {
         }
     }
 
+    fn read_char_expect(&mut self, expect_char: char, allow_empty: bool) -> std::io::Result<()> {
+        let char = self.try_read_char()?;
+        match char {
+            Some(c) if c == expect_char => Ok(()),
+            None if allow_empty => Ok(()),
+            _ => Err(std::io::Error::other("expect char"))
+        }   
+    }
+
+    fn read_str_expect(&mut self, expect_str: &str, mut allow_empty: bool) -> std::io::Result<()> {
+        if expect_str.is_empty() && allow_empty { return Ok(()) }
+        
+        for expect_char in expect_str.chars() {
+            self.read_char_expect(expect_char, allow_empty)?;
+            allow_empty = false;
+        }
+
+        Ok(())
+    }
+
     fn read_char(&mut self) -> std::io::Result<char> {
         let b1 = self.read_byte()?;
 
@@ -111,7 +131,7 @@ pub trait PeakableReadExt {
         let n2 = self.read_char()?;
 
         if !n1.is_ascii_digit() || !n2.is_ascii_digit() {
-            return Err(std::io::Error::other("char was not a digit"))
+            return Err(std::io::Error::other(format!("char ({n1:?} | {n2:?}) was not a digit")))
         }
 
         let n1 = (n1 as u8) - b'0';
@@ -125,7 +145,7 @@ pub trait PeakableReadExt {
         let n3 = self.read_char()?;
 
         if !n3.is_ascii_digit() {
-            return Err(std::io::Error::other("char was not a digit"))
+            return Err(std::io::Error::other(format!("char ({n3:?}) was not a digit")))
         }
 
         let n3 = ((n3 as u8) - b'0') as u16;
@@ -228,7 +248,7 @@ impl<R> ReadWraper<R> {
     }
 
     #[inline(always)]
-    fn is_eof(&mut self) -> bool {
+    pub fn is_eof(&mut self) -> bool {
         self.is_buf_empty && self.is_r_eof
     }
 

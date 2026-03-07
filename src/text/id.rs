@@ -1,5 +1,6 @@
-use crate::text::num::{S3NumsWriter, S3RevNumsWriter};
-use crate::text::s3::{RngMinimal, S3Writer, S3WriterInfo, S3WriterRand};
+use crate::text::num::{S3NumsReader, S3NumsWriter, S3RevNumsWriter};
+use crate::text::s3::{RngMinimal, S3Reader, S3Writer, S3WriterInfo, S3WriterRand};
+use crate::text::str_reader::StrReadWraper;
 use crate::text::str_writer::WriteExt;
 
 #[derive(Clone)]
@@ -49,6 +50,47 @@ impl<W: WriteExt, Rng: RngMinimal> S3WriterRand<W, Rng> for IdWriter {
         }
 
         Ok(())
+    }
+}
+#[derive(Clone)]
+pub struct IdReader {
+    hide_r: S3NumsReader,
+    postfix_len: u8,
+}
+
+impl IdReader {
+    pub fn new(hide_len: u8, postfix_len: u8) -> Self {
+        Self {
+            hide_r: S3NumsReader::new(hide_len, true, true),
+            postfix_len,
+        }
+    }
+}
+
+impl S3WriterInfo for IdReader {
+    fn bits_once(&self) -> u8 {
+        self.hide_r.bits_once()
+    }
+
+    fn s3_once(&self) -> u64 {
+        self.hide_r.s3_once()
+    }
+}
+
+impl<R: std::io::Read> S3Reader<StrReadWraper<R>> for IdReader {
+    type Error = std::io::Error;
+    
+    fn read(&mut self, r: &mut StrReadWraper<R>) -> Result<u64, Self::Error> {
+        let id_str = r.read_nums(true)?;
+        if id_str.is_empty() {
+            return Err(std::io::Error::other("IdReader: empty id?!"));
+        }
+
+        let id_str = id_str.as_bytes();
+        let id_str = &id_str[..id_str.len() - self.postfix_len as usize];
+        let mut id_str = &id_str[id_str.len() - self.hide_r.len() as usize..];
+
+        Ok(self.hide_r.read(&mut id_str)?)
     }
 }
 
