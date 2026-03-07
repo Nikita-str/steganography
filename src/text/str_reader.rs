@@ -104,6 +104,33 @@ pub trait PeakableReadExt {
             _ => Err(std::io::Error::other("Invalid UTF-8 char seq")),
         }
     }
+
+    /// Reads [z]eroed `n2` that in `0..=99`
+    fn read_n2z(&mut self) -> std::io::Result<u8> {
+        let n1 = self.read_char()?;
+        let n2 = self.read_char()?;
+
+        if !n1.is_ascii_digit() || !n2.is_ascii_digit() {
+            return Err(std::io::Error::other("char was not a digit"))
+        }
+
+        let n1 = (n1 as u8) - b'0';
+        let n2 = (n2 as u8) - b'0';
+        Ok(n1 * 10 + n2) 
+    }
+    
+    /// Reads [z]eroed `n2` that in `0..=999`
+    fn read_n3z(&mut self) -> std::io::Result<u16> {
+        let n2z = self.read_n2z()? as u16;
+        let n3 = self.read_char()?;
+
+        if !n3.is_ascii_digit() {
+            return Err(std::io::Error::other("char was not a digit"))
+        }
+
+        let n3 = ((n3 as u8) - b'0') as u16;
+        Ok(n2z * 10 + n3) 
+    }
     
     fn read_str(&mut self, str: &mut String, char_len: u8) -> std::io::Result<()> {
         for _ in 0..char_len {
@@ -388,6 +415,10 @@ impl<R: std::io::Read> StrReadWraper<R> {
         self.r_wrap
     }
 
+    pub fn wrap_mut(&mut self) -> &mut ReadWraper<R> {
+        &mut self.r_wrap
+    }
+
     pub fn str_buf(&self) -> &str {
         &self.str_buf
     }
@@ -411,11 +442,15 @@ impl<R: std::io::Read> StrReadWraper<R> {
         Ok(&mut self.str_buf)
     }
     
+    pub fn read_nums(&mut self, clear: bool) -> Result<&mut str> {
+        self.str_buf_empty_test(clear);
+        self.r_wrap.read_str_while(&mut self.str_buf, |c|c.is_ascii_digit())?;
+        Ok(&mut self.str_buf)
+    }
+
     pub fn read_while(&mut self, while_f: impl FnMut(char) -> bool, clear: bool) -> Result<&mut str> {
         self.str_buf_empty_test(clear);
-
         self.r_wrap.read_str_while(&mut self.str_buf, while_f)?;
-        
         Ok(&mut self.str_buf)
     }
 }

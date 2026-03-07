@@ -1,4 +1,5 @@
-use crate::text::s3::{S3Writer, S3WriterInfo};
+use crate::text::s3::{S3Reader, S3Writer, S3WriterInfo};
+use crate::text::str_reader::{PeakableReadExt, StrReadWraper};
 use crate::text::str_writer::WriteExt;
 
 /// Reads `n2` that in `0..=99`
@@ -39,6 +40,20 @@ impl TimeFormat {
             TimeFormat::HMSMill => u64::ilog2(self.variants()) as u8,
         };
         floor_bit + 1
+    }
+
+    pub fn has_sec(self) -> bool {
+        match self {
+            Self::HM => false,
+            _ => true,
+        }
+    }
+
+    pub fn has_ms(self) -> bool {
+        match self {
+            Self::HMSMill => true,
+            _ => false,
+        }
     }
 
     pub const fn variants(self) -> u64 {
@@ -193,7 +208,7 @@ impl BitsToTime {
     /// * `None` => `self.is_done()` (do nothing)
     pub fn write<W: WriteExt>(&mut self, w: &mut W) -> std::io::Result<Option<()>> {
         if let Some(bits) = self.next_u32() {
-            S3TimeWriter::new(self.fmt).write(bits as u64, w)?;
+            S3TimeRW::new(self.fmt).write(bits as u64, w)?;
             Ok(Some(()))
         } else {
             Ok(None)
@@ -211,15 +226,15 @@ impl BitsToTime {
 }
 
 #[derive(Clone, Copy)]
-pub struct S3TimeWriter { fmt: TimeFormat }
-impl S3TimeWriter {
+pub struct S3TimeRW { fmt: TimeFormat }
+impl S3TimeRW {
     #[inline(always)]
     pub fn new(fmt: TimeFormat) -> Self {
         Self { fmt }
     }   
 }
 
-impl S3WriterInfo for S3TimeWriter {
+impl S3WriterInfo for S3TimeRW {
     fn bits_once(&self) -> u8 {
         self.fmt.bit_size()
     }
@@ -229,7 +244,7 @@ impl S3WriterInfo for S3TimeWriter {
     }
 }
 
-impl<W: WriteExt> S3Writer<W> for S3TimeWriter {
+impl<W: WriteExt> S3Writer<W> for S3TimeRW {
     type Error = std::io::Error;
 
     /// # Panics
@@ -280,6 +295,35 @@ impl<W: WriteExt> S3Writer<W> for S3TimeWriter {
         }
 
         Ok(())
+    }
+}
+
+impl<R: PeakableReadExt> S3Reader<R> for S3TimeRW {
+    type Error = std::io::Error;
+    
+    fn read(&mut self, r: &mut R) -> Result<u64, Self::Error> {
+        let h = r.read_n2z()? as u64;
+        let m = r.read_n2z()? as u64;
+        let mut ret = h * 60 + m;
+
+        if self.fmt.has_sec() {
+            let s = r.read_n2z()? as u64;
+            ret = ret * 60 + s;
+        }
+        if self.fmt.has_ms() {
+            let ms = r.read_n3z()? as u64;
+            ret = ret * 1000 + ms;
+        }
+
+        Ok(ret)
+    }
+}
+
+impl<R: std::io::Read> S3Reader<StrReadWraper<R>> for S3TimeRW {
+    type Error = std::io::Error;
+    
+    fn read(&mut self, r: &mut StrReadWraper<R>) -> Result<u64, Self::Error> {
+        self.read(r.wrap_mut())
     }
 }
 

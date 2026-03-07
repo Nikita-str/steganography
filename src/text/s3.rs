@@ -231,12 +231,12 @@ mod s3_type_writer {
     use crate::text::price::{S3FloatPriceWriter, S3IntPriceWriter};
     use crate::text::s3::{RngMinimal, S3WriterInfo, S3WriterRand};
     use crate::text::str_writer::WriteExt;
-    use crate::text::time::S3TimeWriter;
+    use crate::text::time::S3TimeRW;
 
     use crate::text::s3::S3WriterRandWrap as WrapR;
 
     pub enum S3TypeWriter<W, R> {
-        Time(WrapR<S3TimeWriter>),
+        Time(WrapR<S3TimeRW>),
         IntPrice(S3IntPriceWriter),
         FloatPrice(S3FloatPriceWriter),
         Id(IdWriter),

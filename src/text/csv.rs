@@ -163,7 +163,7 @@ mod tests {
     use crate::text::s3::S3WriterRandWrap as WrapR;
     use crate::text::str_writer::WriterFmt;
     use crate::text::id::IdWriter;
-    use crate::text::time::{S3TimeWriter, TimeFormat};
+    use crate::text::time::{S3TimeRW, TimeFormat};
     use super::*;
 
     #[test]
@@ -182,7 +182,7 @@ mod tests {
         let float_price = S3FloatPriceWriter::new(int_part, FracVariation::HighNum);
         csv.add_column_str("price", S3TypeWriter::FloatPrice(float_price));
 
-        csv.add_column_str("time", S3TypeWriter::Time(WrapR(S3TimeWriter::new(TimeFormat::HMS))));
+        csv.add_column_str("time", S3TypeWriter::Time(WrapR(S3TimeRW::new(TimeFormat::HMS))));
 
         println!("{:?}", csv.line.s3);
         println!("{:?}", csv.line.chunk_sz);

@@ -286,6 +286,10 @@ impl S3NumsReader {
             is_zeroed,
         }
     }
+
+    pub fn len(&self) -> u8 {
+        self.len
+    }
 }
 
 impl S3WriterInfo for S3NumsReader {
@@ -351,9 +355,21 @@ impl<R: std::io::Read> S3Reader<StrReadWraper<R>> for S3NumsReader {
             return Err(std::io::Error::other("S3NumsReader: empty number"))
         }
 
+        self.read(&mut str.as_bytes())
+    }
+}
+
+impl S3Reader<&[u8]> for S3NumsReader {
+    type Error = std::io::Error;
+
+    fn read(&mut self, r_bstr0: &mut &[u8]) -> Result<u64, Self::Error> {
+        let r_bstr = *r_bstr0;
+        let bstr_len = r_bstr.len().min(self.len as usize);
+        let r_bstr = &r_bstr[..bstr_len];
+        
         let mut shift = 1;
         let mut ret = 0u64;
-        for x in str.chars().map(|c|c as u8 - b'0') {
+        for x in r_bstr.into_iter().map(|&c|c - b'0') {
             let num = x as u64;
             if self.is_reverse {
                 ret = num * shift + ret;
@@ -363,12 +379,12 @@ impl<R: std::io::Read> S3Reader<StrReadWraper<R>> for S3NumsReader {
             }
         }
         
-        if self.is_reverse && !self.is_zeroed { ret *= 10u64.pow(cur_len as u32) }
+        if self.is_reverse && !self.is_zeroed { ret *= 10u64.pow(self.len as u32 - r_bstr.len() as u32) }
 
+        *r_bstr0 = &r_bstr0[bstr_len..];
         Ok(ret)
     }
 }
-
 // ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━  ━━
 
 #[derive(Clone, Copy)]
@@ -388,6 +404,11 @@ impl S3RevNumsWriter {
             zeroed,
             allow_empty: false,
         }
+    }
+
+    #[inline(always)]
+    pub fn len(&self) -> u8 {
+        self.len
     }
 
     #[inline(always)]
@@ -448,6 +469,14 @@ mod tests {
     use crate::text::str_reader::ReadWraper;
 
     use super::*;
+
+    #[test]
+    fn test_num_s3_read_u8() {
+        let mut r = S3NumsReader::new(3, false, false);
+        let mut nums = "123.45".as_bytes();
+        assert_eq!(Some(123), r.read(&mut nums).ok());
+        assert_eq!(".45".as_bytes(), nums);
+    }
 
     #[test]
     fn test_num_s3_write_read() {

@@ -1,6 +1,7 @@
-use crate::text::s3::{RngMinimal, S3Writer, S3WriterInfo, S3WriterRand};
+use crate::text::s3::{RngMinimal, S3Reader, S3Writer, S3WriterInfo, S3WriterRand};
+use crate::text::str_reader::{PeakableReadExt, StrReadWraper};
 use crate::text::str_writer::WriteExt;
-use crate::text::num::S3RevNumsWriter;
+use crate::text::num::{S3NumsReader, S3RevNumsWriter};
 
 #[derive(Clone, Copy)]
 pub enum PostfixSymb {
@@ -57,6 +58,10 @@ impl PricePostfixInfo {
         matches!(self.postfix_symb, PostfixSymb::Zero)
     }
 
+    pub fn remove_postfix_from_bstr<'s>(&self, str: &'s [u8]) -> &'s [u8] {
+        &str[0..str.len().saturating_sub(self.postfix_len as usize)]
+    }
+
     pub fn wrtie<W: WriteExt + ?Sized>(&self, w: &mut W) -> Result<(), std::io::Error> {
         for _ in 0..self.postfix_len {
             w.write_n1z(self.postfix_symb.to_n1())?;
@@ -89,6 +94,13 @@ impl S3IntPriceWriter {
             rev_num_writer,
             prefix_range,
             postfix,
+        }
+    }
+    
+    pub fn create_reader(&self) -> S3IntPriceReader {
+        S3IntPriceReader {
+            num_reader: S3NumsReader::new(self.rev_num_writer.len(), true, false),
+            postfix: self.postfix,
         }
     }
 
@@ -130,6 +142,60 @@ impl<W: WriteExt, Rng: RngMinimal> S3WriterRand<W, Rng> for S3IntPriceWriter {
         }
 
         self.postfix.wrtie(w)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct S3IntPriceReader {
+    num_reader: S3NumsReader,
+    postfix: PricePostfixInfo,
+}
+impl S3IntPriceReader {
+    /// # Panics
+    /// * if `int_len == 0`
+    pub fn new(int_len: u8, postfix: PricePostfixInfo) -> Self {
+        assert!(int_len != 0);
+        
+        let num_reader = S3NumsReader::new(int_len, true, false);
+
+        Self {
+            num_reader,
+            postfix,
+        }
+    }
+}
+
+impl S3WriterInfo for S3IntPriceReader {
+    fn bits_once(&self) -> u8 {
+        self.num_reader.bits_once()
+    }
+
+    fn s3_once(&self) -> u64 {
+        self.num_reader.s3_once()
+    }
+}
+
+impl<R: std::io::Read> S3Reader<StrReadWraper<R>> for S3IntPriceReader {
+    type Error = std::io::Error;
+    
+    fn read(&mut self, r: &mut StrReadWraper<R>) -> Result<u64, Self::Error> {
+        let price_str = r.read_nums(true)?;
+        if price_str.is_empty() {
+            return Err(std::io::Error::other("S3IntPriceReader: empty price?!"));
+        }
+        if price_str == "0" {
+            return Ok(0)
+        }
+        let price_str = price_str.as_bytes();
+        let price_str = self.postfix.remove_postfix_from_bstr(price_str);
+        if price_str.is_empty() {
+            return Ok(0);
+        }
+
+        let real_part_from = price_str.len().saturating_sub(self.num_reader.len() as usize);
+        let mut real_price_str = &price_str[real_part_from..];
+
+        self.num_reader.read(&mut real_price_str)
     }
 }
 
@@ -176,6 +242,19 @@ impl FracVariation {
             FracVariation::Step5 => w.write_n2z(frac * 5),
         }
     }
+        
+    pub fn read<R: PeakableReadExt + ?Sized>(&self, r: &mut R) -> Result<Option<u8>, std::io::Error> {
+        let frac = r.read_n2z()?;
+        let val = match self {
+            FracVariation::Zeros => None,
+            FracVariation::Nines => None,
+            FracVariation::Fifty => Some(frac / 50),
+            FracVariation::ZeroOrNinty => Some(frac / 99),
+            FracVariation::HighNum => Some(frac / 10),
+            FracVariation::Step5 => Some(frac / 5),
+        };
+        Ok(val)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -189,6 +268,13 @@ impl S3FloatPriceWriter {
         Self {
             int_part,
             frac_variation,
+        }
+    }
+
+    pub fn create_reader(&self) -> S3FloatPriceReader {
+        S3FloatPriceReader {
+            int_part: self.int_part.create_reader(),
+            frac_variation: self.frac_variation,
         }
     }
 }
@@ -218,6 +304,49 @@ impl<W: WriteExt, Rng: RngMinimal> S3WriterRand<W, Rng> for S3FloatPriceWriter {
         self.int_part.write(int, w, rng)?;
         w.write_char('.')?;
         self.frac_variation.wrtie(frac, w)
+    }
+}
+
+
+#[derive(Clone, Copy)]
+pub struct S3FloatPriceReader {
+    int_part: S3IntPriceReader,
+    frac_variation: FracVariation,
+}
+
+impl S3FloatPriceReader {
+    pub fn new(int_part: S3IntPriceReader, frac_variation: FracVariation) -> Self {
+        Self {
+            int_part,
+            frac_variation,
+        }
+    }
+}
+
+impl S3WriterInfo for S3FloatPriceReader {
+    fn bits_once(&self) -> u8 {
+        (self.s3_once().ilog2() + 1) as u8
+    }
+
+    fn s3_once(&self) -> u64 {
+        self.int_part.s3_once() * self.frac_variation.s3_once()
+    }
+}
+
+impl<R: std::io::Read> S3Reader<StrReadWraper<R>> for S3FloatPriceReader {
+    type Error = std::io::Error;
+
+    /// # Panics
+    /// * if `self.s3_once() <= x`
+    fn read(&mut self, r: &mut StrReadWraper<R>) -> Result<u64, Self::Error> {
+        let float_var = self.frac_variation.s3_once();
+        let int = self.int_part.read(r)?;
+        if r.wrap_mut().read_char()? != '.' {
+            return Err(std::io::Error::other("S3FloatPriceReader: expect a dot"))
+        }
+        let frac = self.frac_variation.read(r.wrap_mut())?.unwrap_or(0);
+
+        Ok(int * float_var + frac as u64)
     }
 }
 
@@ -301,7 +430,8 @@ mod tests {
         let mut int_price = S3IntPriceWriter::new(2, 3, PricePostfixInfo::new_empty());
         int_price.set_min_prefix(1);
 
-        let mut wr = S3FloatPriceWriter::new(int_price, FracVariation::HighNum);
+        let mut w = S3FloatPriceWriter::new(int_price, FracVariation::HighNum);
+        let mut r = w.create_reader();
         let mut rng = Rng::new(vec![1, 2, 0, 3, 0, 3, 3], vec![]);
         
         let tests = [851, 204, 200, 0, 0, 14, 104];
@@ -309,8 +439,12 @@ mod tests {
 
         for (test, expect) in tests.into_iter().zip(expects) {
             str.clear();
-            wr.write(test, &mut str, &mut rng).unwrap();
+            w.write(test, &mut str, &mut rng).unwrap();
             assert_eq!(str.as_ref(), expect);
+
+            let mut reader = StrReadWraper::new_std(str.as_bytes());
+            let val = r.read(&mut reader).unwrap();
+            assert_eq!(val, test);
         }
         
         //
@@ -318,7 +452,8 @@ mod tests {
         let mut int_price = S3IntPriceWriter::new(2, 3, PricePostfixInfo::new_empty());
         int_price.set_min_prefix(1);
 
-        let mut wr = S3FloatPriceWriter::new(int_price, FracVariation::Step5);
+        let mut w = S3FloatPriceWriter::new(int_price, FracVariation::Step5);
+        let mut r = w.create_reader();
         let mut rng = Rng::new(vec![1, 2, 0, 3, 0, 0, 2], vec![]);
         
         let tests = [85 * 20 + 11, 20 * 20 + 9, 20 * 20 + 18, 10, 5, 0, 3 * 20 + 10];
@@ -326,8 +461,33 @@ mod tests {
 
         for (test, expect) in tests.into_iter().zip(expects) {
             str.clear();
-            wr.write(test, &mut str, &mut rng).unwrap();
+            w.write(test, &mut str, &mut rng).unwrap();
             assert_eq!(str.as_ref(), expect);
+
+            let mut reader = StrReadWraper::new_std(str.as_bytes());
+            let val = r.read(&mut reader).unwrap();
+            assert_eq!(val, test);
+        }
+        
+        //
+
+        let int_price = S3IntPriceWriter::new(2, 3, PricePostfixInfo::new_empty());
+
+        let mut w = S3FloatPriceWriter::new(int_price, FracVariation::Step5);
+        let mut r = w.create_reader();
+        let mut rng = Rng::new(vec![1, 2, 0, 0, 0, 0, 0], vec![]);
+        
+        let tests = [85 * 20 + 11, 20 * 20 + 9, 20 * 20 + 18, 10, 5, 0, 3 * 20 + 10];
+        let expects = ["158.55", "202.45", "2.90", "0.50", "0.25", "0.00", "30.50"];
+
+        for (test, expect) in tests.into_iter().zip(expects) {
+            str.clear();
+            w.write(test, &mut str, &mut rng).unwrap();
+            assert_eq!(str.as_ref(), expect);
+            
+            let mut reader = StrReadWraper::new_std(str.as_bytes());
+            let val = r.read(&mut reader).unwrap();
+            assert_eq!(val, test);
         }
     }
 }
