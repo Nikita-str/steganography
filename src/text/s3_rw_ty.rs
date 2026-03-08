@@ -9,6 +9,7 @@ use crate::text::str_writer::WriteExt;
 use crate::text::time::{S3TimeRW, TimeFormat};
 
 use crate::text::s3::S3WriterRandWrap as WrapR;
+use crate::text::txt_enum::{IsValidChar, TxtVariation, TxtVariationReader, TxtVariationWriter};
 
 pub type S3DynReader<R> = Box<dyn S3Reader<StrReadWraper<R>, Error = std::io::Error>>;
 pub type S3DynWriter<W, Rng> = Box<dyn S3WriterRand<W, Rng, Error = std::io::Error>>;
@@ -20,6 +21,7 @@ pub enum S3TypeWriter<W, Rng> {
     Id(IdWriter),
     IntNumRev(WrapR<S3RevNumsWriter>),
     IntNum(WrapR<S3NumsWriter>),
+    TxtVariation(TxtVariationWriter),
     Dyn(S3DynWriter<W, Rng>),
 }
 
@@ -33,11 +35,11 @@ macro_rules! sub_call_impl_w {
     };
 
     ($self:ident $fn_name:ident ($($arg_name:ident),*) ) => {
-        sub_call_impl_w!($self [Time, IntPrice, FloatPrice, Id, IntNumRev, IntNum, Dyn] => x x.$fn_name($($arg_name),*) )
+        sub_call_impl_w!($self [Time, IntPrice, FloatPrice, Id, IntNumRev, IntNum, TxtVariation, Dyn] => x x.$fn_name($($arg_name),*) )
     };
 
     ($self:ident $fn_name:ident) => {
-        sub_call_impl_w!($self [Time, IntPrice, FloatPrice, Id, IntNumRev, IntNum, Dyn] $fn_name)
+        sub_call_impl_w!($self [Time, IntPrice, FloatPrice, Id, IntNumRev, IntNum, TxtVariation, Dyn] $fn_name)
     };
 }
 
@@ -67,6 +69,7 @@ pub enum S3TypeReader<R> {
     FloatPrice(S3FloatPriceReader),
     Id(IdReader),
     IntNum(S3NumsReader),
+    TxtVariation(TxtVariationReader),
     Dyn(S3DynReader<R>),
 }
 
@@ -80,11 +83,11 @@ macro_rules! sub_call_impl_r {
     };
 
     ($self:ident $fn_name:ident ($($arg_name:ident),*) ) => {
-        sub_call_impl_r!($self [Time, IntPrice, FloatPrice, Id, IntNum, Dyn] => x x.$fn_name($($arg_name),*) )
+        sub_call_impl_r!($self [Time, IntPrice, FloatPrice, Id, IntNum, TxtVariation, Dyn] => x x.$fn_name($($arg_name),*) )
     };
 
     ($self:ident $fn_name:ident) => {
-        sub_call_impl_r!($self [Time, IntPrice, FloatPrice, Id, IntNum, Dyn] $fn_name)
+        sub_call_impl_r!($self [Time, IntPrice, FloatPrice, Id, IntNum, TxtVariation, Dyn] $fn_name)
     };
 }
 
@@ -115,16 +118,32 @@ pub trait S3CtorRW<R, W, Rng> {
 
 pub struct S3CtorsRW<R, W, Rng> {
     map: HashMap<u32, Box<dyn S3CtorRW<R, W, Rng>>>,
+    variations: HashMap<u16, (TxtVariation, IsValidChar)>,
 }
 impl<R, W, Rng> S3CtorsRW<R, W, Rng> {
     pub fn new() -> Self {
-        Self { map: HashMap::with_capacity(16) }
+        Self {
+            map: HashMap::with_capacity(16),
+            variations: HashMap::with_capacity(16),
+        }
+    }
+
+    pub fn is_unused_var_id(&self, var_id: u16) -> bool {
+        self.variations.contains_key(&var_id)
     }
 
     pub fn is_unused_id(&self, id: u32) -> bool {
         self.map.contains_key(&id)
     }
     
+    /// # Panics 
+    /// * if `!self.is_unused_id(id)`
+    pub fn add_txt_var(&mut self, var_id: u16, txt_var: TxtVariation, is_valid_char: IsValidChar) {
+        if self.variations.insert(var_id, (txt_var, is_valid_char)).is_some() {
+            panic!("S3CtorsRW: var_id ({var_id}) is already used!")
+        }
+    }
+
     /// # Panics 
     /// * if `!self.is_unused_id(id)`
     pub fn add_ctor(&mut self, id: u32, ctor: Box<dyn S3CtorRW<R, W, Rng>>) {
@@ -143,11 +162,29 @@ impl<R, W, Rng> S3CtorsRW<R, W, Rng> {
     }
     
     /// # Panics 
+    /// * if `self.is_unused_var_id(id)`
+    pub fn ctor_var_reader(&self, var_id: u16, default: Option<u32>) -> S3TypeReader<R> {
+        match self.variations.get(&var_id) {
+            Some((var, valid_char)) => S3TypeReader::TxtVariation(var.clone().seal_r(valid_char.clone(), default)),
+            None => panic!("S3CtorsRW(ctor_var_reader): unknown id ({var_id})!"),
+        }
+    }
+
+    /// # Panics 
     /// * if `self.is_unused_id(id)`
     pub fn ctor_writer(&self, id: u32, ctor_args: &[u8]) -> S3DynWriter<W, Rng> {
         match self.map.get(&id) {
             Some(ctor) => ctor.ctor_writer(ctor_args),
             None => panic!("S3CtorsRW(ctor_reader): unknown id ({id})!"),
+        }
+    }
+    
+    /// # Panics 
+    /// * if `self.is_unused_var_id(id)`
+    pub fn ctor_var_writer(&self, var_id: u16) -> S3TypeWriter<W, Rng> {
+        match self.variations.get(&var_id) {
+            Some((var, _)) => S3TypeWriter::TxtVariation(var.clone().seal_w()),
+            None => panic!("S3CtorsRW(ctor_var_reader): unknown id ({var_id})!"),
         }
     }
 }
@@ -161,6 +198,7 @@ pub enum S3Type {
     Id { prefix_start_from: u32, hide_len: u8, postfix_len: u8 },
     IntNumRev { num_len: u8, zeroed: bool },
     IntNum { num_len: u8, zeroed: bool },
+    DynTxtVariation { var_id: u16, default: Option<u32> },
     Dyn { dyn_id: u32, args: Vec<u8> },
 }
 
@@ -189,6 +227,10 @@ impl S3Type {
             Self::IntNumRev { num_len, zeroed }
         }
 
+        pub fn new_dyn_txt_variation(var_id: u16, default: Option<u32>) -> Self {
+            Self::DynTxtVariation { var_id, default }
+        }
+
         pub fn new_dyn(dyn_id: u32, args: Vec<u8>) -> Self {
             Self::Dyn { dyn_id, args }
         }
@@ -202,6 +244,7 @@ impl S3Type {
                 Self::Dyn { dyn_id, args } => {
                     S3TypeWriter::Dyn(ctors.ctor_writer(*dyn_id, args.as_slice()))
                 }
+                Self::DynTxtVariation { var_id, .. } => ctors.ctor_var_writer(*var_id),
                 _ => self.to_writer(),
             }
         }
@@ -211,6 +254,7 @@ impl S3Type {
                 Self::Dyn { dyn_id, args } => {
                     S3TypeReader::Dyn(ctors.ctor_reader(*dyn_id, args.as_slice()))
                 }
+                Self::DynTxtVariation { var_id, default } => ctors.ctor_var_reader(*var_id, *default),
                 _ => self.to_reader(),
             }
         }
@@ -235,7 +279,7 @@ impl S3Type {
             
             S3Type::IntNumRev { num_len, zeroed } => S3TypeWriter::IntNumRev(WrapR(S3RevNumsWriter::new(num_len, zeroed))),
             S3Type::IntNum { num_len, zeroed } => S3TypeWriter::IntNum(WrapR(S3NumsWriter::new(num_len, zeroed))),
-            S3Type::Dyn { .. } => panic!("S3Type(to_writer): self is dyn"),
+            _ => panic!("S3Type(to_writer): self is dyn"),
         }
     }
 
@@ -254,7 +298,7 @@ impl S3Type {
             S3Type::Id { hide_len, postfix_len, .. } => S3TypeReader::Id(IdReader::new(hide_len, postfix_len)),
             S3Type::IntNumRev { num_len, zeroed } => S3TypeReader::IntNum(S3NumsReader::new(num_len, true, zeroed)),
             S3Type::IntNum { num_len, zeroed } => S3TypeReader::IntNum(S3NumsReader::new(num_len, false, zeroed)),
-            S3Type::Dyn { .. } => panic!("S3Type(to_reader): self is dyn"),
+            _ => panic!("S3Type(to_reader): self is dyn"),
         }
     }
 }

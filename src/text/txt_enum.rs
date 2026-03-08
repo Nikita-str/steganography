@@ -1,14 +1,19 @@
 use std::{borrow::Cow, collections::HashMap};
 
-use crate::text::s3::{RngMinimal, S3WriterInfo, S3WriterRand};
+use crate::text::s3::{RngMinimal, S3Reader, S3WriterInfo, S3WriterRand};
+use crate::text::str_reader::StrReadWraper;
 use crate::text::str_writer::WriteExt;
 
-
+#[derive(Clone)]
 enum TxtEnum {
     Small(Vec<Cow<'static, str>>),
     Big(HashMap<u32, Cow<'static, str>>),
 }
 impl TxtEnum {
+    fn is_small(&self) -> bool {
+        matches!(self, Self::Small(_))
+    }
+
     fn take_small(self) -> Vec<Cow<'static, str>> {
         match self {
             TxtEnum::Small(small) => small,
@@ -16,7 +21,16 @@ impl TxtEnum {
         }
     }
 
+    fn take_big(self) -> HashMap<u32, Cow<'static, str>> {
+        match self {
+            TxtEnum::Big(big) => big,
+            TxtEnum::Small(_) => panic!("Self is not `::Big`"),
+        }
+    }
+
     fn transmute_small_into_big(&mut self) {
+        if !self.is_small() { return }
+
         let mut small = TxtEnum::Small(Vec::new());
         std::mem::swap(self, &mut small);
         
@@ -38,6 +52,7 @@ impl TxtEnum {
     }
 }
 
+#[derive(Clone)]
 pub struct TxtVariation {
     inner: TxtEnum,
     s3: u32,
@@ -103,16 +118,27 @@ impl TxtVariation {
         }
     }
 
-    /// # Panics 
-    /// * if `self.variation_amount() <= 1`
-    pub fn seal(mut self) -> TxtVariationWriter {
+
+    fn seal_prepare(&mut self) {
         if self.s3 == 0 || self.s3 == 1 {
             self.set_s3(self.variation_amount());
         }
 
         assert!(self.variation_amount() > 1);
+    }
 
+    /// # Panics 
+    /// * if `self.variation_amount() <= 1`
+    pub fn seal_w(mut self) -> TxtVariationWriter {
+        self.seal_prepare();
         TxtVariationWriter::new(self)
+    }
+    
+    /// # Panics 
+    /// * if `self.variation_amount() <= 1`
+    pub fn seal_r(mut self, valid_char: IsValidChar, default: Option<u32>) -> TxtVariationReader {
+        self.seal_prepare();
+        TxtVariationReader::new(self, valid_char, default)
     }
 }
 
@@ -188,6 +214,193 @@ impl<W: WriteExt, Rng: RngMinimal> S3WriterRand<W, Rng> for TxtVariationWriter {
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+pub trait IsValidCharSeq {
+    fn clone_boxed(&self) -> Box<dyn IsValidCharSeq>;
+
+    fn reset(&mut self);
+    fn is_valid(&mut self, c: char) -> bool;
+}
+
+#[derive(Clone)]
+pub struct IsValidCharEng {
+    lower: bool,
+    capital: bool,
+}
+impl IsValidCharEng {
+    pub fn new_lower() -> Self {
+        Self {
+            lower: true,
+            capital: false,
+        }
+    }
+    pub fn new_capital() -> Self {
+        Self {
+            lower: false,
+            capital: true,
+        }
+    }
+    pub fn new_any() -> Self {
+        Self {
+            lower: true,
+            capital: true,
+        }
+    }
+}
+
+impl IsValidCharSeq for IsValidCharEng {
+    fn reset(&mut self) { }
+
+    fn is_valid(&mut self, c: char) -> bool {
+        match c {
+            'a'..='z' if self.lower => true,
+            'A'..='Z' if self.capital => true,
+            _ => false,
+        }
+    }
+    
+    fn clone_boxed(&self) -> Box<dyn IsValidCharSeq> {
+        Box::new(self.clone())
+    }
+}
+
+#[derive(Clone)]
+pub struct IsValidCharEngNum {
+    num: IsValidCharEng,
+    first: bool,
+}
+impl IsValidCharEngNum {
+    pub fn new(num: IsValidCharEng) -> Self {
+        Self { num, first: true }
+    }
+}
+impl IsValidCharSeq for IsValidCharEngNum {     
+    fn reset(&mut self) { self.first = true; }
+
+    fn is_valid(&mut self, c: char) -> bool {
+        match c {
+            '0'..='9' if !self.first => true,
+            _ => {
+                self.first = false;
+                self.num.is_valid(c)
+            }
+        }
+    }
+
+    fn clone_boxed(&self) -> Box<dyn IsValidCharSeq> {
+        Box::new(self.clone())
+    }
+}
+
+pub enum IsValidChar {
+    Eng(IsValidCharEng),
+    EngThenNum(IsValidCharEngNum),
+    Dyn(Box<dyn IsValidCharSeq>)
+}
+impl Clone for IsValidChar {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Eng(arg0) => Self::Eng(arg0.clone()),
+            Self::EngThenNum(arg0) => Self::EngThenNum(arg0.clone()),
+            Self::Dyn(arg0) => Self::Dyn(arg0.clone_boxed()),
+        }
+    }
+}
+impl IsValidCharSeq for IsValidChar {
+    fn reset(&mut self) {
+        match self {
+            IsValidChar::Eng(x) => x.reset(),
+            IsValidChar::EngThenNum(x) => x.reset(),
+            IsValidChar::Dyn(x) => x.reset(),
+        }
+    }
+
+    fn is_valid(&mut self, c: char) -> bool {
+        match self {
+            IsValidChar::Eng(x) => x.is_valid(c),
+            IsValidChar::EngThenNum(x) => x.is_valid(c),
+            IsValidChar::Dyn(x) => x.is_valid(c),
+        }
+    }
+    
+    fn clone_boxed(&self) -> Box<dyn IsValidCharSeq> {
+        unimplemented!()
+    }
+
+    
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+struct InnerReader {
+    map: HashMap<Cow<'static, str>, u32>,
+    valid_chars: IsValidChar, //MAYBE: use prefix tree
+}
+
+pub struct TxtVariationReader {
+    inner: Box<InnerReader>,
+    s3: u32,
+    unkn_value: Option<u32>,
+}
+impl TxtVariationReader {
+    pub fn new(mut var: TxtVariation, valid_char: IsValidChar, default: Option<u32>) -> Self {
+        var.inner.transmute_small_into_big();
+        let map = var.inner.take_big().into_iter().map(|(k,v)|(v, k)).collect();
+
+        if let Some(x) = default {
+            assert!(x < var.s3, "must be: {x} < {}", var.s3);
+        }
+
+        Self {
+            inner: Box::new(InnerReader {
+                map,
+                valid_chars: valid_char,
+            }),
+            s3: var.s3,
+            unkn_value: default,
+        }
+    }
+}
+
+impl S3WriterInfo for TxtVariationReader {
+    fn bits_once(&self) -> u8 {
+        let s3 = self.s3_once();
+        let is_pow_2 = (s3 & (s3 - 1)) == 0;
+        self.s3_once().ilog2() as u8 + (!is_pow_2) as u8
+    }
+
+    fn s3_once(&self) -> u64 {
+        self.s3 as u64
+    }
+}
+
+impl<R: std::io::Read> S3Reader<StrReadWraper<R>> for TxtVariationReader {
+    type Error = std::io::Error;
+
+    fn read(&mut self, r: &mut StrReadWraper<R>) -> Result<u64, Self::Error> {
+        let valid_chars = &mut self.inner.valid_chars;
+        valid_chars.reset();
+        let mut s = &*r.read_while(|c|valid_chars.is_valid(c), true)?;
+        self.read(&mut s)
+    }
+}
+
+impl S3Reader<&str> for TxtVariationReader {
+    type Error = std::io::Error;
+
+    fn read(&mut self, s: &mut &str) -> Result<u64, Self::Error> {
+        match self.inner.map.get(*s) {
+            Some(&x) => Ok(x as u64),
+            None => match self.unkn_value {
+                Some(x) => Ok(x as u64),
+                None => panic!("TxtVariationReader: {s:?} unknown variation!"),
+            }
+        }
+    }
+}
+
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 #[cfg(test)]
 mod tests {
     use rand::rng;
@@ -195,20 +408,45 @@ mod tests {
     use super::*;
 
     #[test]
+    pub fn test_txt_rw() {        
+        let v = vec![
+            "Abobus", "Autobus", "Bus", "Busy", 
+            "Dinosaurs", "Agrosaurus", "Triceratops", "TRex",
+            "Diplodocus", "Brontosaurus", "Stegosaurus", "Streptococcus",
+        ];
+
+        let mut var = TxtVariation::new(12);
+        var.add_str_iter(v.iter().map(|x|*x));
+
+        let mut w = var.clone().seal_w();
+        let mut r = var.seal_r(IsValidChar::Eng(IsValidCharEng::new_any()), Some(9));
+
+        for x in 0..=11 {
+            let mut rng = rng();
+            let mut str = WriterFmt::new(String::new());
+            w.write(x, &mut str, &mut rng).unwrap();
+
+            let mut str = StrReadWraper::new_std(str.as_bytes());
+            let y = r.read(&mut str).unwrap();
+            assert_eq!(x, y);
+        }
+    }
+
+    #[test]
     pub fn test_txt_bit_once() {
         let mut txt_var = TxtVariation::new(10);
         txt_var.add_str_iter(["A", "B", "C"].into_iter());
-        let x = txt_var.seal();
+        let x = txt_var.seal_w();
         assert_eq!(2, x.bits_once());
         
         let mut txt_var = TxtVariation::new(10);
         txt_var.add_str_iter(["A", "B", "C", "D"].into_iter());
-        let x = txt_var.seal();
+        let x = txt_var.seal_w();
         assert_eq!(2, x.bits_once());
         
         let mut txt_var = TxtVariation::new(10);
         txt_var.add_str_iter(["A", "B", "C", "D", "E"].into_iter());
-        let x = txt_var.seal();
+        let x = txt_var.seal_w();
         assert_eq!(3, x.bits_once());
     }
 
@@ -229,7 +467,7 @@ mod tests {
             let mut var = TxtVariation::new(12);
             var.add_str_iter(v.iter().map(|x|*x));
             var.set_s3(s3);
-            let mut var = var.seal();
+            let mut var = var.seal_w();
             
             for x in 0..100u32 {
                 str.clear();

@@ -302,6 +302,7 @@ mod tests {
     use crate::text::str_reader::StrReadWraper;
     use crate::text::str_writer::WriterFmt;
     use crate::text::time::TimeFormat;
+    use crate::text::txt_enum::{IsValidChar, IsValidCharEng, TxtVariation};
     use super::*;
 
     #[allow(unused)]
@@ -366,6 +367,18 @@ mod tests {
         let columns: &[_] = &["user_id", "time_a", "time_b", "value", "amount"];
         sigs.push((sig3, columns));
         
+        let mut sig4 = S3Signature::new();
+        sig4.add_s3_type(S3Type::new_dyn_txt_variation(1, None));
+        sig4.add_s3_type(S3Type::new_dyn_txt_variation(0, None));
+        let columns: &[_] = &["lvl", "type"];
+        sigs.push((sig4, columns));
+
+        let mut txt_variation_log = TxtVariation::new(4);
+        txt_variation_log.add_str_iter(["ERROR", "WARN", "INFO", "DEBUG"]);
+
+        let mut txt_variation_lvl = TxtVariation::new(4);
+        txt_variation_lvl.add_str_iter(["A", "B", "C", "D"]);
+
         for test in &tests {
             for (sig, columns) in &sigs {
                 let mut read = test.as_bytes();
@@ -373,7 +386,9 @@ mod tests {
                 str.clear();
                 let mut str_w = WriterFmt::new(str);
 
-                let s3_dyn_ctors = S3CtorsRW::new();
+                let mut s3_dyn_ctors = S3CtorsRW::new();
+                s3_dyn_ctors.add_txt_var(0, txt_variation_log.clone(), IsValidChar::Eng(IsValidCharEng::new_any()));
+                s3_dyn_ctors.add_txt_var(1, txt_variation_lvl.clone(), IsValidChar::Eng(IsValidCharEng::new_any()));
 
                 let mut csv = CsvWriter::new_std();
                 columns.into_iter().zip(sig.iter_writers(&s3_dyn_ctors)).for_each(|(column, ty)|{
