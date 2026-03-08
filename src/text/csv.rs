@@ -400,6 +400,7 @@ mod tests {
                 drop(csv_r);
                 drop(s3_dyn_ctors);
                 str = str_w.take_inner();
+                // if test.len() < 20 { println!("{test:?}:\n{str}") }
             }
         }
     }

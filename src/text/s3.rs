@@ -211,13 +211,19 @@ impl S3BitReader {
             return false
         }
 
-        let (bits, real_sz) = self.buf.try_take_bits(chunk_sz);
+        let (mut bits, real_sz) = self.buf.try_take_bits(chunk_sz);
         if real_sz != chunk_sz {
             assert!(self.buf.is_reader_eof(), "seems like you forget to fill readder buffer");
+            debug_assert!(chunk_sz > real_sz);
+
+            // TODO: because of it we will write one chunk bits more ... 
+            //       (first time we get not full chunk (it's ok) & second time we literally take empty chunk)
             if real_sz == 0 {
                 self.eof_stream = true;
                 return false
             }
+
+            bits = self.rng_buf.concat(bits, real_sz, chunk_sz - real_sz);
         }
 
         self.bits_to_write = bits;
