@@ -46,7 +46,6 @@ pub trait S3WriterRand<W, Rng>: S3WriterInfo {
             Ok(false)
         } else {
             let bits = reader.take_bits_from_writer(self);
-            println!("w: {bits} (max: {})", self.s3_once());
             self.write(bits, w, rng)?;
             Ok(true)
         }
@@ -184,8 +183,9 @@ impl S3BitReader {
 
             let delta = after_bit_len - self.total_bits_to_write;
             debug_assert!(delta > 0);
-            let bits = self.bits_to_write;
-            let mut bits = self.rng_buf.concat(bits, n - delta, delta);
+            let delta = delta - 1;
+            let bits_wo_rand = self.bits_to_write;
+            let mut bits = self.rng_buf.concat(bits_wo_rand, n - delta, delta);
 
             if bits >= s3 {
                 bits ^= 1 << (n - 1);
@@ -455,7 +455,7 @@ impl RngBuf {
     
     #[inline]
     pub fn concat(&mut self, bits: u64, bits_n: u8, more_n: u8) -> u64 {
-        bits | (self.r_bits(more_n)) << bits_n
+        bits | (self.r_bits(more_n) << bits_n)
     }
 }
 
@@ -628,7 +628,6 @@ pub trait S3Reader<R>: S3WriterInfo {
         } else {
             let s3 = self.s3_once();
             let s3_value = self.read(r)?;
-            println!("r: {s3_value} (max: {s3})");
             writer.write_s3(s3_value, s3);
             Ok(true)
         }
@@ -838,9 +837,9 @@ impl S3BitWriter {
             panic!("You cannot `take_on_eof` when there still is a full chunk");
         }
         
-        if rest % 8 != 0 {
-            panic!("You cannot `take_on_eof` with not an integer number of bytes");
-        }
+        // if rest % 8 != 0 {
+        //     panic!("You cannot `take_on_eof` with not an integer number of bytes");
+        // }
 
         (self.buf.take_bits(rest), rest)
     }

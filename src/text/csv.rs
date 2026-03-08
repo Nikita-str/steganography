@@ -292,6 +292,7 @@ impl<R: std::io::Read> CsvReader<R> {
 
 #[cfg(test)]
 mod tests {
+    use image::EncodableLayout;
     use rand::rng;
     use crate::text::price::{FracVariation, PricePostfixInfo, S3FloatPriceWriter, S3IntPriceWriter};
     use crate::text::s3::S3WriterRandWrap as WrapR;
@@ -301,46 +302,81 @@ mod tests {
     use crate::text::time::{S3TimeRW, TimeFormat};
     use super::*;
 
+    #[allow(unused)]
+    struct Rng1;
+    impl RngMinimal for Rng1 {
+        fn r8(&mut self) -> u8 {
+            0xFF
+        }
+    
+        fn r64(&mut self) -> u64 {
+            0xFFFF_FFFF_FFFF_FFFF
+        }
+    
+        fn r8_range(&mut self, range: std::ops::RangeInclusive<u8>) -> u8 {
+            *range.end()
+        }
+    
+        fn r64_range_excl(&mut self, range: std::ops::Range<u64>) -> u64 {
+            range.end - 1
+        }
+    }
+
     #[test]
     fn test_csv() {
         let mut rng = rng();
-        let str = String::with_capacity(1000);
-        let mut str = WriterFmt::new(str);
+        let mut str = String::with_capacity(1000);
 
-        let mut read = "Давай проверим этот текст, что ли?".as_bytes();
-        println!("bit len = {} | {read:?}", read.len() * 8);
+        let mut tests = vec![
+            "Давай".to_string().into_bytes(),
+            vec![0b1111_1111; 42],
+            vec![0b1111_1101; 42],
+            vec![0b1010_0101; 42],
+            "Давай проверим этот текст, что ли?".to_string().into_bytes(),
+        ];
 
-        let mut csv = CsvWriter::new_std();
-        csv.add_column_str("prod_id",S3TypeWriter::Id(IdWriter::new(21, 2, 1)));
+        for len in [3, 17, 25, 67, 129, 255, 997, 1023, 9999, 1024 * 25] {
+            let mut v = Vec::with_capacity(len);
+            (0..len).for_each(|_|v.push(rng.r8()));
+            tests.push(v);
+        }
 
-        let int_part = S3IntPriceWriter::new(2, 3, PricePostfixInfo::new_empty());
-        let float_price = S3FloatPriceWriter::new(int_part, FracVariation::HighNum);
-        let float_price_reader = float_price.create_reader();
-        csv.add_column_str("price", S3TypeWriter::FloatPrice(float_price));
+        for test in &tests {
+            let mut read = test.as_bytes();
+            
+            let mut csv = CsvWriter::new_std();
+            csv.add_column_str("prod_id",S3TypeWriter::Id(IdWriter::new(21, 2, 1)));
+            
+            let int_part = S3IntPriceWriter::new(2, 3, PricePostfixInfo::new_empty());
+            let float_price = S3FloatPriceWriter::new(int_part, FracVariation::HighNum);
+            let float_price_reader = float_price.create_reader();
+            csv.add_column_str("price", S3TypeWriter::FloatPrice(float_price));
+            
+            let time_rw = S3TimeRW::new(TimeFormat::HMS);
+            csv.add_column_str("time", S3TypeWriter::Time(WrapR(time_rw)));
+            
+            // let mut rng = Rng1;
+            str.clear();
+            let mut str_w = WriterFmt::new(str);
+            let mut s3full = S3Full::new(&mut read, &mut str_w, &mut rng).unwrap();
+            
+            csv.write_all(&mut s3full).unwrap();
+            
+            let mut csv_r = CsvReader::new_std();
+            csv_r.add_column(S3TypeReader::Id(IdReader::new(2, 1)));
+            csv_r.add_column(S3TypeReader::FloatPrice(float_price_reader));
+            csv_r.add_column(S3TypeReader::Time(time_rw));
+            
+            let mut r = StrReadWraper::new_std(str_w.as_bytes());
+            let mut w = Vec::with_capacity(1024);
+            let mut s3full = S3FullReader::new(&mut r, &mut w);
+            csv_r.read_all(&mut s3full).unwrap();
+            assert_eq!(test, &w[..test.len()]);
+            assert!(w.len() <= test.len() + 8);
 
-        let time_rw = S3TimeRW::new(TimeFormat::HMS);
-        csv.add_column_str("time", S3TypeWriter::Time(WrapR(time_rw)));
-
-        println!("{:?}", csv.line.s3);
-        println!("{:?}", csv.line.chunk_sz);
-
-        let mut s3full = S3Full::new(&mut read, &mut str, &mut rng).unwrap();
-
-        csv.write_all(&mut s3full).unwrap();
-
-        println!("{}", str.as_str());
-        println!("lines: {}", str.lines().count());
-
-        println!("----------------------------------");
-        let mut csv_r = CsvReader::new_std();
-        csv_r.add_column(S3TypeReader::Id(IdReader::new(2, 1)));
-        csv_r.add_column(S3TypeReader::FloatPrice(float_price_reader));
-        csv_r.add_column(S3TypeReader::Time(time_rw));
-
-        let mut r = StrReadWraper::new_std(str.as_bytes());
-        let mut w = Vec::with_capacity(1024);
-        let mut s3full = S3FullReader::new(&mut r, &mut w);
-        csv_r.read_all(&mut s3full).unwrap();
-        println!("readed: {w:?}");
+            println!("{} -> {}", test.len(), str_w.as_bytes().len());
+            drop(csv_r);
+            str = str_w.take_inner();
+        }
     }
 }
