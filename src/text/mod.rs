@@ -8,6 +8,7 @@ use crate::writer::IterByteWriter;
 use crate::{Error, Result};
 
 pub mod s3;
+pub mod s3_rw_ty;
 pub mod id;
 pub mod num;
 pub mod time;

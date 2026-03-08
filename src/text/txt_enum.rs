@@ -148,7 +148,9 @@ impl TxtVariationWriter {
 
 impl S3WriterInfo for TxtVariationWriter {
     fn bits_once(&self) -> u8 {
-        (self.s3_once().ilog2() + 1) as u8
+        let s3 = self.s3_once();
+        let is_pow_2 = (s3 & (s3 - 1)) == 0;
+        self.s3_once().ilog2() as u8 + (!is_pow_2) as u8
     }
 
     fn s3_once(&self) -> u64 {
@@ -191,6 +193,24 @@ mod tests {
     use rand::rng;
     use crate::text::str_writer::WriterFmt;
     use super::*;
+
+    #[test]
+    pub fn test_txt_bit_once() {
+        let mut txt_var = TxtVariation::new(10);
+        txt_var.add_str_iter(["A", "B", "C"].into_iter());
+        let x = txt_var.seal();
+        assert_eq!(2, x.bits_once());
+        
+        let mut txt_var = TxtVariation::new(10);
+        txt_var.add_str_iter(["A", "B", "C", "D"].into_iter());
+        let x = txt_var.seal();
+        assert_eq!(2, x.bits_once());
+        
+        let mut txt_var = TxtVariation::new(10);
+        txt_var.add_str_iter(["A", "B", "C", "D", "E"].into_iter());
+        let x = txt_var.seal();
+        assert_eq!(3, x.bits_once());
+    }
 
     #[test]
     pub fn test_txt_enum() {
